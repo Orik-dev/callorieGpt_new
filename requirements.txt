@@ -1,0 +1,29 @@
+fastapi
+uvicorn[standard]
+aiohttp
+python-dotenv
+gunicorn
+# Telegram
+aiogram==3.22.0
+
+# OpenAI
+openai
+
+# Redis + MySQL
+redis>=5.0.0
+aiomysql>=0.2.0
+
+# Audio
+pydub
+SpeechRecognition
+
+# Payments
+yookassa>=3.5.0
+
+# Очереди задач (если ARQ используешь)
+arq==0.26.3
+
+# Прочее
+httpx
+chatgpt-md-converter
+git+https://github.com/loRes228/aiogram_broadcaster

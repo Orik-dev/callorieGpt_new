@@ -1,0 +1,83 @@
+services:
+  backend:
+    build: .
+    container_name: calorie_bot
+    env_file: .env
+    depends_on:
+      - redis
+    ports:
+      - "8010:8000"
+    volumes:
+      - redis_data:/data
+      - voice_temp:/shared-voice
+    restart: always
+    networks:
+      - internal
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+
+  redis:
+    image: redis:7
+    container_name: redis
+    command: [ "redis-server", "--requirepass", "${REDIS_PASSWORD}" ]
+    volumes:
+      - redis_data:/data
+    networks:
+      - internal
+
+  arqworker_1:
+    build: .
+    env_file: .env
+    depends_on:
+      - redis
+    command: [ "python", "-m", "arq", "app.arq_worker.WorkerSettings" ]
+    volumes:
+      - voice_temp:/shared-voice
+    restart: always
+    networks:
+      - internal
+      - external_net
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+
+  arqworker_2:
+    build: .
+    env_file: .env
+    depends_on:
+      - redis
+    command: [ "python", "-m", "arq", "app.arq_worker.WorkerSettings" ]
+    volumes:
+      - voice_temp:/shared-voice
+    restart: always
+    networks:
+      - internal
+      - external_net
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+
+  webhook-init:
+    build: .
+    restart: "no"
+    command: [ "python", "app/init_webhook.py" ]
+    env_file:
+      - .env
+    depends_on:
+      - backend
+    environment:
+      - PYTHONPATH=/app
+    networks:
+      - internal
+
+volumes:
+  redis_data:
+  voice_temp:
+
+
+networks:
+  internal:
+    driver: bridge
+  external_net:
+    driver: bridge
