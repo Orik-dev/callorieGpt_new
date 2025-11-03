@@ -98,57 +98,6 @@ async def back_to_methods(callback: CallbackQuery):
     )
     await callback.answer()
 
-# ---------------- ЮKassa (как было) ----------------
-
-# @router.callback_query(F.data.startswith("sub_rub_"))
-# async def handle_subscribe_rub(callback: CallbackQuery, state: FSMContext):
-#     user_id = callback.from_user.id
-#     key = callback.data.replace("sub_rub_", "")
-#     plan = SUBSCRIBES.get(key)
-#     if not plan:
-#         await callback.answer("Неизвестный тариф.", show_alert=True)
-#         return
-
-#     await get_or_create_user(user_id, callback.from_user.first_name)
-#     user = await get_user_by_id(user_id)
-#     user_email = user.get("email")
-
-#     # Если e-mail не сохранён — спросим 1 раз и вернёмся сюда
-#     if not user_email:
-#         await state.set_state(EmailState.waiting_email)
-#         await state.update_data(pending_plan_key=key)
-#         await callback.message.edit_text(
-#             "✉️ Укажите e-mail для чека. Его спросим один раз и запомним.\n\n"
-#             "Пример: <code>name@example.com</code>\n\n"
-#             "Можно отменить — нажмите «Назад».",
-#             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="sub_back")]]),
-#             parse_mode="HTML",
-#         )
-#         await callback.answer()
-#         return
-
-#     # e-mail есть — создаём платёж как раньше, но передаём его в чек
-#     try:
-#         payment_url = await create_payment(
-#             user_id, plan["amount"], plan["desc"], plan["days"],
-#             customer_email=user_email,  # <—
-#         )
-#     except Exception as e:
-#         logger.exception(f"[Subscribe:RUB] Ошибка create_payment: {e}")
-#         await callback.answer("Оплата картой временно недоступна. Попробуйте позже или выберите ⭐.", show_alert=True)
-#         return
-
-#     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-#         [InlineKeyboardButton(text="💳 Перейти к оплате", url=payment_url)],
-#         [InlineKeyboardButton(text="⬅️ Назад", callback_data="sub_back")]
-#     ])
-#     await callback.message.edit_text(
-#         f"✅ Тариф: <b>{plan['desc']}</b>\n\nНажмите кнопку ниже для оплаты:",
-#         reply_markup=keyboard,
-#         parse_mode="HTML",
-#     )
-#     await callback.answer()
-
 
 @router.callback_query(F.data.startswith("sub_rub_"))
 async def handle_subscribe_rub(callback: CallbackQuery, state: FSMContext):
@@ -360,52 +309,6 @@ async def cancel_sub(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Ошибка при закрытии меню подписки для пользователя {callback.from_user.id}: {e}")
         await callback.answer("Ошибка при закрытии меню.", show_alert=True)
-
-# @router.message(EmailState.waiting_email)
-# async def on_email_entered(message: Message, state: FSMContext):
-#     email = (message.text or "").strip()
-#     if not EMAIL_RE.match(email):
-#         await message.answer("Похоже, это не e-mail. Отправьте адрес в формате <code>name@example.com</code> или нажмите /cancel.", parse_mode="HTML")
-#         return
-
-#     try:
-#         await set_user_email(message.from_user.id, email)
-#     except Exception as e:
-#         logger.exception(f"[Subscribe:RUB] set_user_email: {e}")
-#         await message.answer("Не удалось сохранить e-mail. Попробуйте ещё раз.")
-#         return
-
-#     data = await state.get_data()
-#     plan_key = data.get("pending_plan_key")
-#     plan = SUBSCRIBES.get(plan_key) or SUBSCRIBES["key_1_month"]
-
-#     # Сброс состояния, чтобы не висело
-#     await state.clear()
-
-#     # Сразу запускаем оплату с только что сохранённым e-mail
-#     try:
-#         payment_url = await create_payment(
-#             message.from_user.id,
-#             plan["amount"],
-#             plan["desc"],
-#             plan["days"],
-#             customer_email=email,  # <—
-#         )
-#     except Exception as e:
-#         logger.exception(f"[Subscribe:RUB] Ошибка create_payment после ввода e-mail: {e}")
-#         await message.answer("Оплата картой временно недоступна. Попробуйте позже или выберите ⭐.")
-#         return
-
-#     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-#         [InlineKeyboardButton(text="💳 Перейти к оплате", url=payment_url)],
-#         [InlineKeyboardButton(text="⬅️ Назад", callback_data="sub_back")]
-#     ])
-#     await message.answer(
-#         f"Спасибо! E-mail сохранён: <b>{email}</b>\n"
-#         f"Тариф: <b>{plan['desc']}</b>\n\nНажмите кнопку ниже для оплаты:",
-#         reply_markup=keyboard,
-#         parse_mode="HTML",
-#     )
 
 
 @router.message(EmailState.waiting_email)

@@ -1,75 +1,7 @@
-# import logging
-# import asyncio
-# from fastapi import FastAPI
-# from arq import run_worker, cron
-# from arq.connections import RedisSettings
-# from app.config import settings
-# from app.db.mysql import init_db, close_db
-# from app.tasks.subscriptions import try_all_autopays
-# from app.tasks.daily_reset import reset_tokens
-# from app.tasks.broadcast import send_broadcast
-# from app.tasks.gpt_queue import process_gpt_request
-# from app.tasks.context_cleanup import reset_all_user_contexts
-# from app.db.redis_client import init_arq_redis
-
-# # Настройка логов
-# logging.basicConfig(level=settings.log_level, format="%(asctime)s [%(levelname)s] %(message)s")
-# logger = logging.getLogger(__name__)
-
-# # FastAPI-приложение (используется для доступа к state.db_pool)
-# app = FastAPI()
-
-# # Инициализация при запуске
-# async def startup(ctx):
-#     logger.info("🚀 ARQ Worker: инициализация MySQL")
-#     await init_db(app)
-#     await init_arq_redis()
-
-#     ctx["app"] = app
-
-# # Завершение работы
-# async def shutdown(ctx):
-#     logger.info("🔻 ARQ Worker: закрытие MySQL")
-#     await close_db(app)
-
-# # Настройки воркера
-# class WorkerSettings:
-#     functions = [
-#         try_all_autopays,
-#         send_broadcast,
-#         process_gpt_request, 
-#         ]
-
-#     cron_jobs = [
-#         cron(reset_tokens, hour=3, minute=5),           # 🕛 Обновление токенов каждый день
-#         cron(try_all_autopays, hour=3, minute=10),       # 🔁 Попытка автосписания утром
-#         cron(reset_all_user_contexts, hour=3, minute=15),       # 🔁 Попытка автосписания утром
-#     ]
-
-#     redis_settings = RedisSettings.from_dsn(settings.redis_url)
-
-#     on_startup = startup
-#     on_shutdown = shutdown
-
-#     job_timeout = 386400          # 12 часов (достаточно для 1M при 25 RPS)
-#     keep_result = 86400 
-
-# # Запуск вручную (если надо)
-# if __name__ == "__main__":
-#     logger.info("👷 Запуск ARQ Worker вручную")
-#     try:
-#         asyncio.run(run_worker(WorkerSettings))
-#     except Exception as e:
-#         logger.exception("❌ Ошибка при запуске worker")
-#         raise
-
-
-# app/workers/arq_worker.py
 # ========================================
 # ✅ CRITICAL: Отключить uvloop ДО ВСЕХ импортов!
 # ========================================
 import sys
-import os
 
 # Удалить uvloop из sys.modules если он там есть
 if 'uvloop' in sys.modules:
@@ -89,61 +21,79 @@ import logging
 from fastapi import FastAPI
 from arq import run_worker, cron
 from arq.connections import RedisSettings
+
 from app.config import settings
 from app.db.mysql import init_db, close_db
 from app.tasks.subscriptions import try_all_autopays
 from app.tasks.daily_reset import reset_tokens
 from app.tasks.broadcast import send_broadcast
 from app.tasks.gpt_queue import process_gpt_request
-from app.tasks.context_cleanup import reset_all_user_contexts
 from app.db.redis_client import init_arq_redis
+from app.utils.logger import setup_logger
 
 # Настройка логов
-logging.basicConfig(level=settings.log_level, format="%(asctime)s [%(levelname)s] %(message)s")
+setup_logger()
 logger = logging.getLogger(__name__)
 
-# FastAPI-приложение (используется для доступа к state.db_pool)
+# FastAPI-приложение (для доступа к db_pool)
 app = FastAPI()
 
-# Инициализация при запуске
+
 async def startup(ctx):
-    logger.info("🚀 ARQ Worker: инициализация MySQL")
+    """Инициализация при запуске воркера"""
+    logger.info("🚀 ARQ Worker: инициализация MySQL и Redis")
     await init_db(app)
     await init_arq_redis()
     ctx["app"] = app
+    logger.info("✅ ARQ Worker: готов к работе")
 
-# Завершение работы
+
 async def shutdown(ctx):
-    logger.info("🔻 ARQ Worker: закрытие MySQL")
+    """Завершение работы воркера"""
+    logger.info("🔻 ARQ Worker: закрытие соединений")
     await close_db(app)
+    logger.info("👋 ARQ Worker: остановлен")
 
-# Настройки воркера
+
 class WorkerSettings:
+    """Настройки ARQ воркера"""
+    
+    # Обрабатываемые функции
     functions = [
         try_all_autopays,
         send_broadcast,
-        process_gpt_request, 
+        process_gpt_request,
     ]
-
+    
+    # Крон-задачи (выполняются по расписанию)
     cron_jobs = [
-        cron(reset_tokens, hour=3, minute=5),
-        cron(try_all_autopays, hour=3, minute=10),
-        cron(reset_all_user_contexts, hour=3, minute=15),
+        cron(reset_tokens, hour=3, minute=5),       # Сброс токенов в 03:05 UTC
+        cron(try_all_autopays, hour=3, minute=10),  # Автоплатежи в 03:10 UTC
     ]
-
+    
+    # Настройки Redis
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
-
+    
+    # Lifecycle хуки
     on_startup = startup
     on_shutdown = shutdown
+    
+    # Таймауты и лимиты
+    job_timeout = 600        # 10 минут на задачу
+    keep_result = 3600       # Хранить результаты 1 час
+    max_jobs = 10            # Максимум 10 задач одновременно
+    
+    # Настройки повторов
+    max_tries = 3            # Максимум 3 попытки
+    retry_jobs = True        # Включить повторы
 
-    job_timeout = 386400
-    keep_result = 86400 
 
-# Запуск вручную (если надо)
 if __name__ == "__main__":
-    logger.info("👷 Запуск ARQ Worker вручную")
+    logger.info("👷 Запуск ARQ Worker")
     try:
         asyncio.run(run_worker(WorkerSettings))
+    except KeyboardInterrupt:
+        logger.info("⏹ ARQ Worker остановлен пользователем")
     except Exception as e:
-        logger.exception("❌ Ошибка при запуске worker")
+        logger.exception(f"❌ Ошибка при запуске ARQ Worker: {e}")
         raise

@@ -1,15 +1,64 @@
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Header, HTTPException
 from aiogram import Dispatcher, Bot
 from app.bot.bot import dp, bot
+from app.config import settings
+import logging
 
+logger = logging.getLogger(__name__)
 telegram_router = APIRouter()
 
+
 @telegram_router.post("/telegram")
-async def telegram_webhook(request: Request):
-    update_data = await request.json()
+async def telegram_webhook(
+    request: Request,
+    x_telegram_bot_api_secret_token: str = Header(None)
+):
+    """
+    Обработчик Telegram webhook с проверкой секрета
+    
+    Security: Проверяет X-Telegram-Bot-Api-Secret-Token заголовок
+    """
+    # Проверка секретного токена
+    if x_telegram_bot_api_secret_token != settings.webhook_secret:
+        logger.warning(
+            f"❌ Invalid webhook secret from {request.client.host} "
+            f"(got: {x_telegram_bot_api_secret_token[:10] if x_telegram_bot_api_secret_token else 'None'}...)"
+        )
+        raise HTTPException(status_code=403, detail="Forbidden")
+    
+    # Получаем данные обновления
+    try:
+        update_data = await request.json()
+        logger.debug(f"📨 Received update: {update_data.get('update_id')}")
+    except Exception as e:
+        logger.error(f"❌ Failed to parse update JSON: {e}")
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    
+    # Передаем в Aiogram dispatcher
     try:
         await dp.feed_raw_update(bot, update_data)
+        logger.debug(f"✅ Update {update_data.get('update_id')} processed")
     except Exception as e:
-        import logging
-        logging.exception("Ошибка при обработке Telegram update")
+        logger.exception(f"❌ Error processing Telegram update: {e}")
+        # Не возвращаем 500, чтобы Telegram не ретраил
+    
     return {"ok": True}
+
+
+@telegram_router.get("/telegram/status")
+async def telegram_status():
+    """Проверка статуса Telegram бота"""
+    try:
+        me = await bot.get_me()
+        return {
+            "status": "ok",
+            "bot_username": me.username,
+            "bot_id": me.id,
+            "bot_name": me.first_name
+        }
+    except Exception as e:
+        logger.error(f"Failed to get bot info: {e}")
+        return {
+            "status": "error",
+            "error": str(e)
+        }

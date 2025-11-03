@@ -22,7 +22,7 @@ yookassa>=3.5.0
 
 # Очереди задач (если ARQ используешь)
 arq==0.26.3
-
+pytz>=2024.1
 # Прочее
 httpx
 chatgpt-md-converter

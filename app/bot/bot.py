@@ -7,7 +7,7 @@ from app.db.redis_client import redis, init_arq_redis
 from app.config import settings
 from app.bot.middleware.fastapi_app import FastAPIAppMiddleware # Middleware для FastAPI app
 from app.bot.middleware.kick_on_private import KickNonPrivateMiddleware # Middleware для FastAPI app
-from app.bot.handlers import start, profile, entry, subscribe, admin, system,help,bots
+from app.bot.handlers import start, profile, entry, subscribe, admin, system,help,bots,stats
 from app.bot.middleware.redis_middleware import RedisMiddleware
 
 # Инициализация хранилища состояний для FSM
@@ -31,7 +31,8 @@ dp.include_router(bots.router)     # Команда /bots
 dp.include_router(profile.router)    # Команда /profile и коллбэки профиля
 dp.include_router(subscribe.router)  # Команда /subscribe и коллбэки подписки
 dp.include_router(admin.router)  
-dp.include_router(help.router)      # Обработка основных сообщений (текст, фото, голос) - ОБЫЧНО В КОНЦЕ
+dp.include_router(help.router)
+dp.include_router(stats.router)
 dp.include_router(entry.router)      # Обработка основных сообщений (текст, фото, голос) - ОБЫЧНО В КОНЦЕ
 
 

@@ -1,159 +1,294 @@
-# app/services/user.py
 from app.db.mysql import mysql
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from app.config import settings
 import logging
 import re
+
 logger = logging.getLogger(__name__)
 
+# Количество токенов
+FREE_TOKENS_COUNT = 5        # Для новых/неактивных пользователей
+SUBSCRIBED_TOKENS_COUNT = 25  # Для подписчиков
 
-# Количество бесплатных токенов для новых пользователей и неверифицированных
-FREE_TOKENS_COUNT = 5
-# Количество токенов для подписчиков
-SUBSCRIBED_TOKENS_COUNT = 25
+# Улучшенная валидация email
+EMAIL_RE = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
 
-async def get_user_by_id(user_id: int):
-    """Получить информацию о пользователе по его Telegram ID."""
+
+async def get_user_by_id(user_id: int) -> dict:
+    """
+    Получить информацию о пользователе по Telegram ID
+    
+    Returns:
+        dict с полями пользователя или None если не найден
+    """
     try:
-        return await mysql.fetchone("SELECT * FROM users_tbl WHERE tg_id=%s", (user_id,))
+        return await mysql.fetchone(
+            "SELECT * FROM users_tbl WHERE tg_id=%s",
+            (user_id,)
+        )
     except Exception as e:
-        logger.error(f"Ошибка при получении пользователя {user_id}: {e}")
+        logger.error(f"Error fetching user {user_id}: {e}")
         raise
 
 
-async def get_or_create_user(tg_id: int, tg_name: str):
+async def get_or_create_user(tg_id: int, tg_name: str) -> dict:
+    """
+    Получить пользователя или создать нового
+    
+    При создании выдается FREE_TOKENS_COUNT токенов
+    Проверяет актуальность подписки и сбрасывает если истекла
+    
+    Returns:
+        dict с данными пользователя
+    """
     user = await get_user_by_id(tg_id)
     
     if not user:
-        logger.info(f"Создаем нового пользователя: TG ID={tg_id}, Name={tg_name}")
+        logger.info(f"Creating new user: TG ID={tg_id}, Name={tg_name}")
         try:
             await mysql.execute(
-                "INSERT INTO users_tbl (tg_id, tg_name, free_tokens) VALUES (%s, %s, %s)",
-                (tg_id, tg_name, FREE_TOKENS_COUNT)
+                """INSERT INTO users_tbl (tg_id, tg_name, free_tokens, timezone) 
+                   VALUES (%s, %s, %s, %s)""",
+                (tg_id, tg_name, FREE_TOKENS_COUNT, 'Europe/Moscow')
             )
             user = await get_user_by_id(tg_id)
-            logger.info(f"Новый пользователь {tg_id} успешно создан с {FREE_TOKENS_COUNT} токенами.")
+            logger.info(f"✅ New user {tg_id} created with {FREE_TOKENS_COUNT} tokens")
         except Exception as e:
-            logger.error(f"Ошибка при создании нового пользователя {tg_id}: {e}")
+            logger.error(f"Error creating user {tg_id}: {e}")
             raise
-
-    # Защитная проверка с UPDATE только если дата точно устарела
-    if user.get("expiration_date") and user["expiration_date"] < datetime.now().date():
-        # Перепроверим из базы перед сбросом
+        return user
+    
+    # Проверка актуальности подписки (только если дата точно устарела)
+    exp_date = user.get("expiration_date")
+    if exp_date and exp_date < datetime.now().date():
+        # Двойная проверка из БД перед сбросом (защита от race condition)
         fresh_user = await get_user_by_id(tg_id)
         if fresh_user["expiration_date"] and fresh_user["expiration_date"] < datetime.now().date():
-            logger.info(f"[Подписка] У {tg_id} истек срок. Обнуляем expiration_date.")
-            await mysql.execute("UPDATE users_tbl SET expiration_date = NULL WHERE tg_id = %s", (tg_id,))
+            logger.info(f"[Subscription] User {tg_id} subscription expired, resetting")
+            async with mysql.pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        """UPDATE users_tbl 
+                           SET expiration_date = NULL, 
+                               free_tokens = %s,
+                               payment_method_id = NULL
+                           WHERE tg_id = %s""",
+                        (FREE_TOKENS_COUNT, tg_id)
+                    )
             user["expiration_date"] = None
+            user["free_tokens"] = FREE_TOKENS_COUNT
         else:
-            # Обновилась в это время – используем свежую
-            user["expiration_date"] = fresh_user["expiration_date"]
-
+            # Обновилась параллельно - используем свежие данные
+            user = fresh_user
+    
     return user
+
 
 async def deduct_token(user_id: int) -> bool:
     """
-    Списать 1 токен у пользователя.
-    Возвращает True, если токен был списан, False в противном случае (если токенов нет).
+    Списать 1 токен у пользователя (DEPRECATED)
+    
+    ⚠️ DEPRECATED: Используйте атомарное списание в handlers вместо этой функции!
+    
+    Returns:
+        True если токен списан, False если токенов нет
+    """
+    logger.warning(f"DEPRECATED: deduct_token called for user {user_id}. Use atomic UPDATE in handlers!")
+    
+    async with mysql.pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """UPDATE users_tbl 
+                   SET free_tokens = GREATEST(free_tokens - 1, 0) 
+                   WHERE tg_id=%s AND free_tokens > 0""",
+                (user_id,)
+            )
+            success = cur.rowcount > 0
+            
+            if success:
+                logger.info(f"Token deducted for user {user_id}")
+            else:
+                logger.info(f"No tokens available for user {user_id}")
+            
+            return success
+
+
+async def extend_subscription(
+    user_id: int,
+    days: int,
+    method_id: str | None,
+    amount: float
+):
+    """
+    Продлить/активировать подписку пользователя
+    
+    Args:
+        user_id: Telegram ID пользователя
+        days: Количество дней подписки
+        method_id: ID метода оплаты (для автопродления)
+        amount: Сумма платежа
     """
     user = await get_user_by_id(user_id)
     if not user:
-        logger.warning(f"Попытка списать токен у несуществующего пользователя: {user_id}")
-        return False
-
-    current_tokens = user.get("free_tokens", 0)
-    if current_tokens > 0:
-        try:
-            await mysql.execute(
-                "UPDATE users_tbl SET free_tokens = free_tokens - 1 WHERE tg_id=%s",
-                (user_id,)
-            )
-            logger.info(f"Токен списан у пользователя {user_id}. Осталось: {current_tokens - 1}")
-            return True
-        except Exception as e:
-            logger.error(f"Ошибка при списании токена у пользователя {user_id}: {e}")
-            raise
-    else:
-        logger.info(f"Недостаточно токенов у пользователя {user_id}. Текущие токены: {current_tokens}.")
-        return False
-
-async def extend_subscription(user_id: int, days: int, method_id: str | None, amount: float):
-    user = await get_user_by_id(user_id)
-    if not user:
-        logger.error(f"Попытка продлить подписку несуществующему пользователю: {user_id}")
+        logger.error(f"Cannot extend subscription: user {user_id} not found")
         return
+    
     current_expiration = user.get("expiration_date")
     today = datetime.now().date()
 
+    # Расчет новой даты окончания подписки
     if current_expiration and current_expiration >= today:
         new_exp_date = current_expiration + timedelta(days=days)
-        logger.info(f"Продление существующей подписки для {user_id}. Старая дата: {current_expiration}, Новая дата: {new_exp_date}")
+        logger.info(
+            f"Extending subscription for user {user_id}: "
+            f"{current_expiration} → {new_exp_date} (+{days} days)"
+        )
     else:
         new_exp_date = today + timedelta(days=days)
-        logger.info(f"Активация новой подписки для {user_id}. Дата истечения: {new_exp_date}")
+        logger.info(
+            f"Activating new subscription for user {user_id}: "
+            f"expires {new_exp_date} ({days} days)"
+        )
 
     try:
-        await mysql.execute("""
-            UPDATE users_tbl
-            SET free_tokens=%s,
-                expiration_date=%s,
-                payment_method_id=%s,
-                last_subscription_days=%s,
-                last_subscription_amount=%s,
-                failed_autopay_attempts=0
-            WHERE tg_id=%s
-        """, (SUBSCRIBED_TOKENS_COUNT, new_exp_date, method_id, days, amount, user_id))
-        logger.info(f"Подписка для пользователя {user_id} успешно обновлена до {new_exp_date}. Токены установлены в {SUBSCRIBED_TOKENS_COUNT}.")
+        async with mysql.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """UPDATE users_tbl
+                       SET free_tokens=%s,
+                           expiration_date=%s,
+                           payment_method_id=%s,
+                           last_subscription_days=%s,
+                           last_subscription_amount=%s,
+                           failed_autopay_attempts=0
+                       WHERE tg_id=%s""",
+                    (
+                        SUBSCRIBED_TOKENS_COUNT,
+                        new_exp_date,
+                        method_id,
+                        days,
+                        amount,
+                        user_id
+                    )
+                )
+        
+        logger.info(
+            f"✅ Subscription updated for user {user_id}: "
+            f"expires {new_exp_date}, tokens={SUBSCRIBED_TOKENS_COUNT}, "
+            f"method_id={'set' if method_id else 'none'}"
+        )
     except Exception as e:
-        logger.error(f"Ошибка при продлении/активации подписки для пользователя {user_id}: {e}")
+        logger.error(f"Error extending subscription for user {user_id}: {e}")
         raise
+
 
 async def block_autopay(user_id: int):
     """
-    Блокирует автоплатёж для пользователя, устанавливая payment_method_id в NULL
-    и сбрасывая счётчик неудачных попыток до максимального значения, чтобы предотвратить дальнейшие попытки.
+    Блокировать автоплатежи для пользователя
+    
+    Сбрасывает payment_method_id и устанавливает максимальное
+    количество неудачных попыток
     """
     try:
-        await mysql.execute("""
-            UPDATE users_tbl
-            SET payment_method_id=NULL, failed_autopay_attempts=%s
-            WHERE tg_id=%s
-        """, (settings.max_failed_autopay_attempts, user_id,))
-        logger.info(f"Автоплатёж для пользователя {user_id} заблокирован.")
+        async with mysql.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """UPDATE users_tbl
+                       SET payment_method_id=NULL, 
+                           failed_autopay_attempts=%s
+                       WHERE tg_id=%s""",
+                    (settings.max_failed_autopay_attempts, user_id)
+                )
+        logger.info(f"✅ Autopay blocked for user {user_id}")
     except Exception as e:
-        logger.error(f"Ошибка при блокировке автоплатежа для пользователя {user_id}: {e}")
+        logger.error(f"Error blocking autopay for user {user_id}: {e}")
         raise
-    
+
+
 async def update_tokens_daily():
-    logger.info("Запуск ежедневного обновления токенов...")
+    """
+    Ежедневное обновление токенов для активных подписчиков
+    
+    Вызывается из cron задачи в 03:05 UTC
+    ⚠️ Не учитывает timezone пользователя!
+    """
+    logger.info("📅 Starting daily token reset...")
+    
     try:
         today = datetime.now().date()
 
-        # Обновляем токены только для пользователей с активной подпиской
-        await mysql.execute(
-            """
-            UPDATE users_tbl 
-            SET free_tokens = %s 
-            WHERE expiration_date IS NOT NULL 
-            AND expiration_date >= %s
-            """,
-            (SUBSCRIBED_TOKENS_COUNT, today)
-        )
+        async with mysql.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                # Обновляем токены только для активных подписчиков
+                await cur.execute(
+                    """UPDATE users_tbl 
+                       SET free_tokens = %s 
+                       WHERE expiration_date IS NOT NULL 
+                       AND expiration_date >= %s""",
+                    (SUBSCRIBED_TOKENS_COUNT, today)
+                )
+                
+                updated_count = cur.rowcount
 
-        result = await mysql.fetchall("SELECT ROW_COUNT() as rows")
-        updated_rows = result[0]["rows"]
-
-        logger.info(f"Ежедневное обновление токенов завершено. Обновлено {updated_rows} записей.")
+        logger.info(f"✅ Daily token reset completed: {updated_count} users updated")
+        
     except Exception as e:
-        logger.error(f"Ошибка при выполнении ежедневного обновления токенов: {e}", exc_info=True)
+        logger.error(f"❌ Error in daily token reset: {e}", exc_info=True)
         raise
 
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 async def set_user_email(user_id: int, email: str) -> None:
+    """
+    Установить email пользователя
+    
+    Args:
+        user_id: Telegram ID
+        email: Email адрес
+        
+    Raises:
+        ValueError: Если email невалидный
+    """
     if not EMAIL_RE.match(email):
-        raise ValueError("Некорректный e-mail")
-    await mysql.execute(
-        "UPDATE users_tbl SET email=%s, email_confirmed=1 WHERE tg_id=%s",
-        (email.strip(), user_id),
-    )
+        raise ValueError("Invalid email format")
+    
+    try:
+        async with mysql.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """UPDATE users_tbl 
+                       SET email=%s, email_confirmed=1 
+                       WHERE tg_id=%s""",
+                    (email.strip().lower(), user_id)
+                )
+        logger.info(f"✅ Email set for user {user_id}: {email}")
+    except Exception as e:
+        logger.error(f"Error setting email for user {user_id}: {e}")
+        raise
+
+
+async def set_user_timezone(user_id: int, timezone: str) -> None:
+    """
+    Установить часовой пояс пользователя
+    
+    Args:
+        user_id: Telegram ID
+        timezone: Название timezone (например, 'Europe/Moscow')
+    """
+    try:
+        # Проверка валидности timezone
+        import pytz
+        pytz.timezone(timezone)  # Выбросит исключение если невалидный
+        
+        async with mysql.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE users_tbl SET timezone=%s WHERE tg_id=%s",
+                    (timezone, user_id)
+                )
+        logger.info(f"✅ Timezone set for user {user_id}: {timezone}")
+    except pytz.exceptions.UnknownTimeZoneError:
+        logger.error(f"Invalid timezone: {timezone}")
+        raise ValueError(f"Invalid timezone: {timezone}")
+    except Exception as e:
+        logger.error(f"Error setting timezone for user {user_id}: {e}")
+        raise

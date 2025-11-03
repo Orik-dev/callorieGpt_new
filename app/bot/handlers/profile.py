@@ -2,7 +2,7 @@ from aiogram import Router, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from app.services.user import get_user_by_id, block_autopay
-from datetime import datetime,date
+from datetime import datetime, date
 import logging
 
 router = Router()
@@ -11,66 +11,113 @@ logger = logging.getLogger(__name__)
 
 @router.message(Command("profile"))
 async def handle_profile(message: types.Message):
+    """
+    Показывает профиль пользователя
+    
+    Отображает:
+    - Имя пользователя
+    - Дата окончания подписки
+    - Количество оставшихся запросов
+    - Статус автопродления
+    """
     user_id = message.from_user.id
+    
     try:
         user = await get_user_by_id(user_id)
+        
         if not user:
-            logger.warning(f"Профиль не найден для пользователя {user_id}. Предлагаем /start.")
-            await message.answer("Профиль не найден. Пожалуйста, начните работу с ботом командой /start")
+            logger.warning(f"[Profile] User {user_id} not found")
+            await message.answer(
+                "⚠️ Профиль не найден. Пожалуйста, начните работу с ботом: /start"
+            )
             return
 
-        # Разбор даты подписки
+        # Обработка даты подписки
         exp_date_raw = user.get("expiration_date")
         exp_date_str = "нет"
-
+        is_active = False
+        
         if exp_date_raw:
             try:
                 if isinstance(exp_date_raw, (datetime, date)):
-                    exp_date_str = exp_date_raw.strftime("%d.%m.%Y")
+                    exp_date_obj = exp_date_raw if isinstance(exp_date_raw, date) else exp_date_raw.date()
+                    exp_date_str = exp_date_obj.strftime("%d.%m.%Y")
+                    is_active = exp_date_obj >= datetime.now().date()
                 else:
-                    logger.warning(f"[Profile] expiration_date странного типа: {type(exp_date_raw)}")
+                    logger.warning(f"[Profile] Unexpected date type for user {user_id}: {type(exp_date_raw)}")
             except Exception as e:
-                logger.warning(f"[Profile] Не удалось обработать дату подписки у {user_id}: {e}")
+                logger.warning(f"[Profile] Failed to parse date for user {user_id}: {e}")
 
-        # Состояние подписки
-        # is_subscription_active = bool(exp_date_parsed and exp_date_parsed >= datetime.now().date())
+        # Статус автопродления
         autopay_active = user.get("payment_method_id") is not None
 
-        # Токены
+        # Количество токенов
         free_tokens = user.get("free_tokens", 0)
-        tokens_display = f"{free_tokens}/25"
+        max_tokens = 25 if is_active else 5
+        tokens_display = f"{free_tokens}/{max_tokens}"
 
-        # Финальное сообщение
+        # Формирование сообщения
         profile_text = (
-            # f"👤 <b>Ваш профиль:</b> {user['name']}\n"
+            f"👤 <b>Ваш профиль</b>\n\n"
             f"📅 <b>Подписка до:</b> {exp_date_str}\n"
-            f"🪙 <b>Осталось запросов на сегодня:</b> {tokens_display}\n"
-            f"🔁 <b>Подписка:</b> {'включена ✅' if autopay_active else 'отключена ❌'}"
+            f"🪙 <b>Запросов осталось сегодня:</b> {tokens_display}\n"
+            f"🔁 <b>Автопродление:</b> {'включено ✅' if autopay_active else 'отключено ❌'}\n"
         )
+        
+        if is_active:
+            profile_text += f"\n✨ <b>Подписка активна</b>"
+        else:
+            profile_text += f"\n💎 Оформите подписку: /subscribe"
 
-        # Кнопка отключения автоплатежа
+        # Кнопка отключения автопродления
         keyboard = None
         if autopay_active:
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="❌ Отключить подписку", callback_data="cancel_autopay")]
+                [InlineKeyboardButton(
+                    text="❌ Отключить автопродление",
+                    callback_data="cancel_autopay"
+                )]
             ])
 
-        await message.answer(profile_text, reply_markup=keyboard, parse_mode="HTML")
-        logger.info(f"Профиль показан для пользователя {user_id}.")
+        await message.answer(
+            profile_text,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        
+        logger.info(f"[Profile] Shown for user {user_id}")
 
     except Exception as e:
-        logger.exception(f"[Profile] Ошибка при загрузке профиля для пользователя {user_id}: {e}")
-        await message.answer("Произошла ошибка при загрузке профиля. Пожалуйста, попробуйте позже.")
+        logger.exception(f"[Profile] Error for user {user_id}: {e}")
+        await message.answer(
+            "⚠️ Произошла ошибка при загрузке профиля. "
+            "Пожалуйста, попробуйте позже."
+        )
 
 
 @router.callback_query(lambda c: c.data == "cancel_autopay")
 async def handle_cancel_autopay(callback: CallbackQuery):
+    """Отключает автопродление подписки"""
     user_id = callback.from_user.id
+    
     try:
         await block_autopay(user_id)
-        await callback.message.edit_text("✅ Автопродление отключено.")
-        await callback.answer("Автопродление отключено")
-        logger.info(f"Автопродление для пользователя {user_id} отключено через профиль.")
+        
+        await callback.message.edit_text(
+            "✅ <b>Автопродление отключено</b>\n\n"
+            "Ваша текущая подписка будет действовать до окончания срока, "
+            "после чего не будет продлена автоматически.\n\n"
+            "Вы можете оформить новую подписку в любой момент: /subscribe",
+            parse_mode="HTML"
+        )
+        
+        await callback.answer("✅ Автопродление отключено")
+        
+        logger.info(f"[Profile] Autopay disabled for user {user_id}")
+        
     except Exception as e:
-        logger.exception(f"[Profile] Ошибка при отключении автоплатежа для пользователя {user_id}: {e}")
-        await callback.answer("Ошибка при отключении автопродления. Попробуйте позже.", show_alert=True)
+        logger.exception(f"[Profile] Error disabling autopay for user {user_id}: {e}")
+        await callback.answer(
+            "⚠️ Ошибка при отключении автопродления. Попробуйте позже.",
+            show_alert=True
+        )
