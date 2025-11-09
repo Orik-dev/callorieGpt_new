@@ -457,3 +457,186 @@ async def get_nutrition_stats(user_id: int, days: int = 7) -> Dict:
     except Exception as e:
         logger.exception(f"Error getting nutrition stats: {e}")
         return {}
+    
+    
+async def parse_gpt_response(response: str) -> Dict:
+    """
+    Парсит JSON-ответ от GPT и валидирует данные
+    
+    ИСПРАВЛЕНИЕ: Если items пустой - это специальный случай (не еда)
+    """
+    try:
+        response = response.strip()
+        
+        if '```' in response:
+            match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response, re.DOTALL)
+            if match:
+                response = match.group(1)
+            else:
+                parts = response.split('```')
+                if len(parts) >= 2:
+                    response = parts[1]
+                    if response.startswith('json'):
+                        response = response[4:]
+        
+        data = json.loads(response)
+        
+        if "items" not in data:
+            raise MealParseError("Отсутствует поле 'items' в ответе")
+        
+        if not isinstance(data["items"], list):
+            raise MealParseError("Поле 'items' должно быть массивом")
+        
+        # ИСПРАВЛЕНИЕ: Пустой массив = не еда
+        if len(data["items"]) == 0:
+            # Проверяем notes - возможно это намеренно (не еда)
+            notes = data.get("notes", "")
+            if "не продукт" in notes.lower() or "не еда" in notes.lower():
+                # Это валидный ответ "не еда" - возвращаем с флагом
+                data["is_not_food"] = True
+                return data
+            else:
+                raise MealParseError("Массив 'items' пуст - не удалось определить продукт")
+        
+        # Остальная валидация как раньше...
+        for idx, item in enumerate(data["items"]):
+            required_fields = ["name", "weight_grams", "calories", "protein", "fat", "carbs"]
+            
+            for field in required_fields:
+                if field not in item:
+                    raise MealParseError(f"Отсутствует поле '{field}' в элементе {idx}")
+            
+            try:
+                weight = float(item["weight_grams"])
+                calories = float(item["calories"])
+                protein = float(item["protein"])
+                fat = float(item["fat"])
+                carbs = float(item["carbs"])
+                
+                if not (1 <= weight <= 5000):
+                    raise ValueError(f"Вес {weight}г вне диапазона 1-5000")
+                
+                if not (0 <= calories <= 5000):
+                    raise ValueError(f"Калории {calories} вне диапазона 0-5000")
+                
+                if not (0 <= protein <= 500):
+                    raise ValueError(f"Белки {protein}г вне диапазона 0-500")
+                
+                if not (0 <= fat <= 500):
+                    raise ValueError(f"Жиры {fat}г вне диапазона 0-500")
+                
+                if not (0 <= carbs <= 1000):
+                    raise ValueError(f"Углеводы {carbs}г вне диапазона 0-1000")
+                
+                calculated_cal = (protein * 4) + (fat * 9) + (carbs * 4)
+                if abs(calories - calculated_cal) > calculated_cal * 0.3:
+                    logger.warning(
+                        f"Suspicious calories for {item['name']}: "
+                        f"stated={calories}, calculated={calculated_cal:.1f}"
+                    )
+                
+                item["weight_grams"] = weight
+                item["calories"] = calories
+                item["protein"] = protein
+                item["fat"] = fat
+                item["carbs"] = carbs
+                
+                if "confidence" in item:
+                    conf = float(item["confidence"])
+                    if not (0 <= conf <= 1):
+                        item["confidence"] = 0.8
+                else:
+                    item["confidence"] = 0.8
+                    
+            except (ValueError, TypeError) as e:
+                raise MealParseError(f"Ошибка валидации элемента {idx}: {e}")
+        
+        return data
+        
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON parse error: {e}\nResponse: {response[:500]}")
+        raise MealParseError(f"Некорректный JSON: {e}")
+    except MealParseError:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected parse error: {e}")
+        raise MealParseError(f"Ошибка парсинга: {e}")
+
+async def delete_multiple_meals(meal_ids: list[int], user_id: int) -> int:
+    """
+    Удаляет несколько приемов пищи и пересчитывает итоги
+    
+    Returns:
+        int - количество удаленных приемов
+    """
+    if not meal_ids:
+        return 0
+    
+    try:
+        async with mysql.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await conn.begin()
+                
+                try:
+                    # Получаем даты всех удаляемых приемов
+                    placeholders = ','.join(['%s'] * len(meal_ids))
+                    query = f"""SELECT DISTINCT meal_date FROM meals_history 
+                               WHERE id IN ({placeholders}) AND tg_id = %s"""
+                    
+                    await cur.execute(query, (*meal_ids, user_id))
+                    dates = await cur.fetchall()
+                    
+                    if not dates:
+                        await conn.rollback()
+                        return 0
+                    
+                    # Удаляем приемы пищи
+                    delete_query = f"""DELETE FROM meals_history 
+                                      WHERE id IN ({placeholders}) AND tg_id = %s"""
+                    await cur.execute(delete_query, (*meal_ids, user_id))
+                    deleted_count = cur.rowcount
+                    
+                    if deleted_count == 0:
+                        await conn.rollback()
+                        return 0
+                    
+                    # Пересчитываем итоги для всех затронутых дат
+                    for date_row in dates:
+                        meal_date = date_row["meal_date"]
+                        
+                        await cur.execute(
+                            """INSERT INTO daily_totals 
+                                (tg_id, date, total_calories, total_protein, 
+                                 total_fat, total_carbs, meals_count)
+                            SELECT 
+                                tg_id, 
+                                meal_date,
+                                COALESCE(SUM(calories), 0), 
+                                COALESCE(SUM(protein), 0), 
+                                COALESCE(SUM(fat), 0), 
+                                COALESCE(SUM(carbs), 0), 
+                                COUNT(*)
+                            FROM meals_history
+                            WHERE tg_id = %s AND meal_date = %s
+                            GROUP BY tg_id, meal_date
+                            ON DUPLICATE KEY UPDATE
+                                total_calories = VALUES(total_calories),
+                                total_protein = VALUES(total_protein),
+                                total_fat = VALUES(total_fat),
+                                total_carbs = VALUES(total_carbs),
+                                meals_count = VALUES(meals_count)""",
+                            (user_id, meal_date)
+                        )
+                    
+                    await conn.commit()
+                    logger.info(f"✅ Deleted {deleted_count} meals for user {user_id}")
+                    return deleted_count
+                    
+                except Exception as e:
+                    await conn.rollback()
+                    logger.exception(f"Error deleting multiple meals: {e}")
+                    raise
+                    
+    except Exception as e:
+        logger.exception(f"Critical error in delete_multiple_meals: {e}")
+        return 0    

@@ -1,7 +1,7 @@
 from aiogram import Router, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from app.services.user import get_user_by_id, block_autopay
+from app.services.user import get_user_by_id, block_autopay, FREE_TOKENS_COUNT, SUBSCRIBED_TOKENS_COUNT
 from datetime import datetime, date
 import logging
 
@@ -11,15 +11,7 @@ logger = logging.getLogger(__name__)
 
 @router.message(Command("profile"))
 async def handle_profile(message: types.Message):
-    """
-    Показывает профиль пользователя
-    
-    Отображает:
-    - Имя пользователя
-    - Дата окончания подписки
-    - Количество оставшихся запросов
-    - Статус автопродления
-    """
+    """Показывает профиль пользователя"""
     user_id = message.from_user.id
     
     try:
@@ -32,7 +24,6 @@ async def handle_profile(message: types.Message):
             )
             return
 
-        # Обработка даты подписки
         exp_date_raw = user.get("expiration_date")
         exp_date_str = "нет"
         is_active = False
@@ -43,20 +34,16 @@ async def handle_profile(message: types.Message):
                     exp_date_obj = exp_date_raw if isinstance(exp_date_raw, date) else exp_date_raw.date()
                     exp_date_str = exp_date_obj.strftime("%d.%m.%Y")
                     is_active = exp_date_obj >= datetime.now().date()
-                else:
-                    logger.warning(f"[Profile] Unexpected date type for user {user_id}: {type(exp_date_raw)}")
             except Exception as e:
                 logger.warning(f"[Profile] Failed to parse date for user {user_id}: {e}")
 
-        # Статус автопродления
         autopay_active = user.get("payment_method_id") is not None
 
-        # Количество токенов
+        # ИСПРАВЛЕНИЕ: Правильный формат - "осталось из максимума"
         free_tokens = user.get("free_tokens", 0)
-        max_tokens = 25 if is_active else 5
-        tokens_display = f"{free_tokens}/{max_tokens}"
+        max_tokens = SUBSCRIBED_TOKENS_COUNT if is_active else FREE_TOKENS_COUNT
+        tokens_display = f"{free_tokens} из {max_tokens}"  # ПРАВИЛЬНЫЙ ПОРЯДОК!
 
-        # Формирование сообщения
         profile_text = (
             f"👤 <b>Ваш профиль</b>\n\n"
             f"📅 <b>Подписка до:</b> {exp_date_str}\n"
@@ -69,7 +56,6 @@ async def handle_profile(message: types.Message):
         else:
             profile_text += f"\n💎 Оформите подписку: /subscribe"
 
-        # Кнопка отключения автопродления
         keyboard = None
         if autopay_active:
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -85,7 +71,7 @@ async def handle_profile(message: types.Message):
             parse_mode="HTML"
         )
         
-        logger.info(f"[Profile] Shown for user {user_id}")
+        logger.info(f"[Profile] Shown for user {user_id}: {tokens_display}")
 
     except Exception as e:
         logger.exception(f"[Profile] Error for user {user_id}: {e}")

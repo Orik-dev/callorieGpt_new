@@ -207,10 +207,11 @@ async def block_autopay(user_id: int):
 
 async def update_tokens_daily():
     """
-    Ежедневное обновление токенов для активных подписчиков
+    Ежедневное обновление токенов для ВСЕХ пользователей
     
-    Вызывается из cron задачи в 03:05 UTC
-    ⚠️ Не учитывает timezone пользователя!
+    НОВАЯ ЛОГИКА:
+    - Активная подписка → 25 токенов
+    - Без подписки → 5 токенов
     """
     logger.info("📅 Starting daily token reset...")
     
@@ -219,7 +220,7 @@ async def update_tokens_daily():
 
         async with mysql.pool.acquire() as conn:
             async with conn.cursor() as cur:
-                # Обновляем токены только для активных подписчиков
+                # 1. Обновляем токены для подписчиков
                 await cur.execute(
                     """UPDATE users_tbl 
                        SET free_tokens = %s 
@@ -227,15 +228,26 @@ async def update_tokens_daily():
                        AND expiration_date >= %s""",
                     (SUBSCRIBED_TOKENS_COUNT, today)
                 )
+                subscribed_count = cur.rowcount
                 
-                updated_count = cur.rowcount
+                # 2. Обновляем токены для бесплатных пользователей
+                await cur.execute(
+                    """UPDATE users_tbl 
+                       SET free_tokens = %s 
+                       WHERE expiration_date IS NULL 
+                       OR expiration_date < %s""",
+                    (FREE_TOKENS_COUNT, today)
+                )
+                free_count = cur.rowcount
 
-        logger.info(f"✅ Daily token reset completed: {updated_count} users updated")
+        logger.info(
+            f"✅ Daily token reset completed: "
+            f"{subscribed_count} subscribed, {free_count} free users"
+        )
         
     except Exception as e:
         logger.error(f"❌ Error in daily token reset: {e}", exc_info=True)
         raise
-
 
 async def set_user_email(user_id: int, email: str) -> None:
     """
