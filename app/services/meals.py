@@ -912,3 +912,60 @@ async def get_day_meals(user_id: int, date_str: str, user_tz: str = "Europe/Mosc
     except Exception as e:
         logger.exception(f"Error getting day meals: {e}")
         return None        
+
+
+async def get_today_meals(user_id: int, user_tz: str = "Europe/Moscow", limit: int = None) -> list:
+    """
+    Получает приемы пищи за сегодняшний день
+    
+    Args:
+        user_id: Telegram ID пользователя
+        user_tz: Часовой пояс
+        limit: Ограничение количества (опционально)
+        
+    Returns:
+        List[Dict] с приемами пищи
+    """
+    try:
+        tz = pytz.timezone(user_tz)
+        today = datetime.now(tz).date()
+        
+        if limit:
+            query = """SELECT * FROM meals_history
+                      WHERE tg_id = %s AND meal_date = %s
+                      ORDER BY meal_datetime DESC
+                      LIMIT %s"""
+            meals = await mysql.fetchall(query, (user_id, today, limit))
+        else:
+            query = """SELECT * FROM meals_history
+                      WHERE tg_id = %s AND meal_date = %s
+                      ORDER BY meal_datetime"""
+            meals = await mysql.fetchall(query, (user_id, today))
+        
+        return meals or []
+        
+    except Exception as e:
+        logger.exception(f"Error getting today meals for user {user_id}: {e}")
+        return []
+
+
+def format_meal_time(meal_datetime: datetime, user_tz: str = "Europe/Moscow") -> str:
+    """
+    Форматирует время приема пищи
+    
+    Args:
+        meal_datetime: Datetime объект
+        user_tz: Часовой пояс
+        
+    Returns:
+        Строка формата "14:30"
+    """
+    try:
+        if isinstance(meal_datetime, datetime):
+            tz = pytz.timezone(user_tz)
+            localized = meal_datetime.astimezone(tz)
+            return localized.strftime("%H:%M")
+        return "00:00"
+    except Exception as e:
+        logger.error(f"Error formatting meal time: {e}")
+        return "00:00"    
