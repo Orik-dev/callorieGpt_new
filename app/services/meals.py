@@ -1,4 +1,4 @@
-from datetime import datetime, date
+from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import json
 import pytz
@@ -640,3 +640,275 @@ async def delete_multiple_meals(meal_ids: list[int], user_id: int) -> int:
     except Exception as e:
         logger.exception(f"Critical error in delete_multiple_meals: {e}")
         return 0    
+    
+    
+ # ДОПОЛНЕНИЯ К app/services/meals.py
+# Добавьте эти функции в конец файла
+
+
+
+
+async def get_food_history(user_id: int, user_tz: str = "Europe/Moscow", days: int = 7) -> List[Dict]:
+    """
+    Получает историю питания за N дней
+    
+    Args:
+        user_id: Telegram ID пользователя
+        user_tz: Часовой пояс пользователя
+        days: Количество дней (по умолчанию 7)
+        
+    Returns:
+        List[Dict] с данными по каждому дню:
+        - date: дата (date object)
+        - date_formatted: форматированная дата "Сегодня", "Вчера", "8 ноября, ЧТ"
+        - total_calories, total_protein, total_fat, total_carbs: итоги
+        - meals_count: количество приемов
+        - meals: список приемов пищи (только для сегодня)
+    """
+    try:
+        tz = pytz.timezone(user_tz)
+        today = datetime.now(tz).date()
+        start_date = today - timedelta(days=days - 1)
+        
+        # Получаем дневные итоги
+        daily_data = await mysql.fetchall(
+            """SELECT 
+                date,
+                total_calories,
+                total_protein,
+                total_fat,
+                total_carbs,
+                meals_count
+            FROM daily_totals
+            WHERE tg_id = %s 
+            AND date BETWEEN %s AND %s
+            ORDER BY date DESC""",
+            (user_id, start_date, today)
+        )
+        
+        if not daily_data:
+            return []
+        
+        result = []
+        weekdays = ["ПН", "ВТ", "СР", "ЧТ", "ПТ", "СБ", "ВС"]
+        
+        for idx, day in enumerate(daily_data):
+            date_obj = day["date"]
+            
+            # Форматирование даты
+            if date_obj == today:
+                date_formatted = f"Сегодня, {date_obj.strftime('%d %B')}"
+            elif date_obj == today - timedelta(days=1):
+                date_formatted = f"Вчера, {date_obj.strftime('%d %B')}"
+            else:
+                weekday = weekdays[date_obj.weekday()]
+                date_formatted = f"{date_obj.strftime('%d %B')}, {weekday}"
+            
+            day_dict = {
+                "date": date_obj,
+                "date_formatted": date_formatted,
+                "total_calories": day["total_calories"],
+                "total_protein": day["total_protein"],
+                "total_fat": day["total_fat"],
+                "total_carbs": day["total_carbs"],
+                "meals_count": day["meals_count"],
+                "meals": []
+            }
+            
+            # Для сегодня получаем список приемов
+            if idx == 0:  # Сегодняшний день
+                meals = await mysql.fetchall(
+                    """SELECT * FROM meals_history
+                    WHERE tg_id = %s AND meal_date = %s
+                    ORDER BY meal_datetime""",
+                    (user_id, date_obj)
+                )
+                day_dict["meals"] = meals or []
+            
+            result.append(day_dict)
+        
+        return result
+        
+    except Exception as e:
+        logger.exception(f"Error getting food history for user {user_id}: {e}")
+        return []
+
+
+async def get_day_details(user_id: int, user_tz: str, day_index: int) -> Dict:
+    """
+    Получает детали конкретного дня
+    
+    Args:
+        user_id: Telegram ID пользователя
+        user_tz: Часовой пояс
+        day_index: Индекс дня (1 = вчера, 2 = позавчера, ...)
+        
+    Returns:
+        Dict с данными дня и списком приемов пищи
+    """
+    try:
+        tz = pytz.timezone(user_tz)
+        today = datetime.now(tz).date()
+        target_date = today - timedelta(days=day_index)
+        
+        # Получаем итоги дня
+        totals = await mysql.fetchone(
+            "SELECT * FROM daily_totals WHERE tg_id = %s AND date = %s",
+            (user_id, target_date)
+        )
+        
+        if not totals:
+            return None
+        
+        # Получаем приемы пищи
+        meals = await mysql.fetchall(
+            """SELECT * FROM meals_history
+            WHERE tg_id = %s AND meal_date = %s
+            ORDER BY meal_datetime""",
+            (user_id, target_date)
+        )
+        
+        # Форматируем дату
+        weekdays = ["ПН", "ВТ", "СР", "ЧТ", "ПТ", "СБ", "ВС"]
+        
+        if target_date == today - timedelta(days=1):
+            date_formatted = f"Вчера, {target_date.strftime('%d %B')}"
+        else:
+            weekday = weekdays[target_date.weekday()]
+            date_formatted = f"{target_date.strftime('%d %B')}, {weekday}"
+        
+        return {
+            "date": target_date,
+            "date_formatted": date_formatted,
+            "total_calories": totals["total_calories"],
+            "total_protein": totals["total_protein"],
+            "total_fat": totals["total_fat"],
+            "total_carbs": totals["total_carbs"],
+            "meals_count": totals["meals_count"],
+            "meals": meals or []
+        }
+        
+    except Exception as e:
+        logger.exception(f"Error getting day details: {e}")
+        return None
+
+
+async def get_week_stats(user_id: int, user_tz: str = "Europe/Moscow") -> Dict:
+    """
+    Получает статистику за неделю для профиля
+    
+    Args:
+        user_id: Telegram ID пользователя
+        user_tz: Часовой пояс
+        
+    Returns:
+        Dict со статистикой:
+        - days_tracked: количество дней с записями
+        - avg_calories: средние калории в день
+        - total_meals: общее количество приемов
+    """
+    try:
+        tz = pytz.timezone(user_tz)
+        today = datetime.now(tz).date()
+        start_date = today - timedelta(days=6)
+        
+        # Получаем данные за неделю
+        daily_stats = await mysql.fetchall(
+            """SELECT 
+                total_calories,
+                meals_count
+            FROM daily_totals
+            WHERE tg_id = %s 
+            AND date BETWEEN %s AND %s
+            ORDER BY date""",
+            (user_id, start_date, today)
+        )
+        
+        if not daily_stats:
+            return {
+                "days_tracked": 0,
+                "avg_calories": 0,
+                "total_meals": 0
+            }
+        
+        # Считаем средние значения
+        total_cal = sum(float(d["total_calories"]) for d in daily_stats)
+        total_meals = sum(d["meals_count"] for d in daily_stats)
+        days_count = len(daily_stats)
+        
+        return {
+            "days_tracked": days_count,
+            "avg_calories": round(total_cal / days_count, 1) if days_count > 0 else 0,
+            "total_meals": total_meals
+        }
+        
+    except Exception as e:
+        logger.exception(f"Error getting week stats: {e}")
+        return {
+            "days_tracked": 0,
+            "avg_calories": 0,
+            "total_meals": 0
+        }
+        
+async def get_day_meals(user_id: int, date_str: str, user_tz: str = "Europe/Moscow") -> Dict:
+    """
+    Получает приемы пищи для конкретного дня
+    
+    Args:
+        user_id: Telegram ID пользователя
+        date_str: Дата в формате "YYYY-MM-DD"
+        user_tz: Часовой пояс
+        
+    Returns:
+        Dict с данными дня и списком приемов пищи
+    """
+    try:
+        from datetime import datetime, timedelta
+        
+        # Парсим дату из строки
+        target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        
+        # Получаем итоги дня
+        totals = await mysql.fetchone(
+            "SELECT * FROM daily_totals WHERE tg_id = %s AND date = %s",
+            (user_id, target_date)
+        )
+        
+        if not totals:
+            return None
+        
+        # Получаем приемы пищи
+        meals = await mysql.fetchall(
+            """SELECT * FROM meals_history
+            WHERE tg_id = %s AND meal_date = %s
+            ORDER BY meal_datetime""",
+            (user_id, target_date)
+        )
+        
+        # Форматируем дату
+        tz = pytz.timezone(user_tz)
+        today = datetime.now(tz).date()
+        weekdays = ["ПН", "ВТ", "СР", "ЧТ", "ПТ", "СБ", "ВС"]
+        
+        if target_date == today:
+            date_formatted = f"Сегодня, {target_date.strftime('%d %B')}"
+        elif target_date == today - timedelta(days=1):
+            date_formatted = f"Вчера, {target_date.strftime('%d %B')}"
+        else:
+            weekday = weekdays[target_date.weekday()]
+            date_formatted = f"{target_date.strftime('%d %B')}, {weekday}"
+        
+        return {
+            "date": target_date,
+            "date_formatted": date_formatted,
+            "total_calories": totals["total_calories"],
+            "total_protein": totals["total_protein"],
+            "total_fat": totals["total_fat"],
+            "total_carbs": totals["total_carbs"],
+            "meals_count": totals["meals_count"],
+            "meals": meals or []
+        }
+        
+    except Exception as e:
+        logger.exception(f"Error getting day meals: {e}")
+        return None        
