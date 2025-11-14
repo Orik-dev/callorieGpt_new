@@ -1,3 +1,4 @@
+from aiogram.exceptions import TelegramBadRequest
 from aiogram import Router, F
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
@@ -99,12 +100,19 @@ async def subscribe_menu(message: Message, state: FSMContext):
 @router.callback_query(F.data == "sub_method_rub")
 async def show_rub(callback: CallbackQuery):
     """Показывает тарифы для оплаты картой"""
-    await callback.message.edit_text(
-        "💳 <b>Оплата картой (ЮKassa)</b>\n\n"
-        "Выберите тариф:",
-        reply_markup=rub_keyboard(),
-        parse_mode="HTML",
-    )
+    
+    try:
+            await callback.message.edit_text(
+                "💳 <b>Оплата картой (ЮKassa)</b>\n\n"
+                "Выберите тариф:",
+                reply_markup=rub_keyboard(),
+                parse_mode="HTML",
+            )
+    except TelegramBadRequest as e:
+            if "message is not modified" in str(e):
+                pass  # Игнорируем - контент не изменился
+            else:
+                raise
     await callback.answer()
 
 

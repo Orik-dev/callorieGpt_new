@@ -1,3 +1,4 @@
+import aiomysql
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import json
@@ -313,75 +314,43 @@ async def get_week_summary(user_id: int, user_tz: str = "Europe/Moscow") -> List
 
 
 async def delete_meal(meal_id: int, user_id: int) -> bool:
-    """
-    Удаляет прием пищи и пересчитывает итоги дня
-    
-    Returns:
-        bool - успешно ли удалено
-    """
+    """Удаляет прием пищи"""
     try:
         async with mysql.pool.acquire() as conn:
-            async with conn.cursor() as cur:
-                await conn.begin()
+            # ✅ ИЗМЕНИТЬ ЭТУ СТРОКУ:
+            async with conn.cursor(aiomysql.DictCursor) as cur:  # ← добавить aiomysql.DictCursor
                 
-                try:
-                    # Получаем дату удаляемого приема
-                    meal = await mysql.fetchone(
-                        "SELECT meal_date FROM meals_history WHERE id = %s AND tg_id = %s",
-                        (meal_id, user_id)
-                    )
-                    
-                    if not meal:
-                        return False
-                    
-                    meal_date = meal["meal_date"]
-                    
-                    # Удаляем прием пищи
-                    await cur.execute(
-                        "DELETE FROM meals_history WHERE id = %s AND tg_id = %s",
-                        (meal_id, user_id)
-                    )
-                    
-                    if cur.rowcount == 0:
-                        await conn.rollback()
-                        return False
-                    
-                    # Пересчитываем итоги дня
-                    await cur.execute(
-                        """INSERT INTO daily_totals 
-                            (tg_id, date, total_calories, total_protein, 
-                             total_fat, total_carbs, meals_count)
-                        SELECT 
-                            tg_id, 
-                            meal_date,
-                            COALESCE(SUM(calories), 0), 
-                            COALESCE(SUM(protein), 0), 
-                            COALESCE(SUM(fat), 0), 
-                            COALESCE(SUM(carbs), 0), 
-                            COUNT(*)
-                        FROM meals_history
-                        WHERE tg_id = %s AND meal_date = %s
-                        GROUP BY tg_id, meal_date
-                        ON DUPLICATE KEY UPDATE
-                            total_calories = VALUES(total_calories),
-                            total_protein = VALUES(total_protein),
-                            total_fat = VALUES(total_fat),
-                            total_carbs = VALUES(total_carbs),
-                            meals_count = VALUES(meals_count)""",
-                        (user_id, meal_date)
-                    )
-                    
-                    await conn.commit()
-                    logger.info(f"✅ Deleted meal {meal_id} for user {user_id}")
+                # Получаем дату для инвалидации кэша
+                await cur.execute(
+                    "SELECT meal_date FROM meals_history WHERE id = %s AND tg_id = %s",
+                    (meal_id, user_id)
+                )
+                
+                result = await cur.fetchone()
+                if not result:
+                    logger.warning(f"[Meals] Meal {meal_id} not found for user {user_id}")
+                    return False
+                
+                meal_date = result["meal_date"]  # ← теперь работает как dict
+                
+                # Удаляем
+                await cur.execute(
+                    "DELETE FROM meals_history WHERE id = %s AND tg_id = %s",
+                    (meal_id, user_id)
+                )
+                
+                if cur.rowcount > 0:
+                    # Инвалидируем кэш
+                    from app.db.redis_client import redis
+                    cache_key = f"meals:summary:{user_id}:{meal_date}"
+                    await redis.delete(cache_key)
+                    logger.info(f"[Meals] Deleted meal {meal_id}, invalidated cache for {meal_date}")
                     return True
-                    
-                except Exception as e:
-                    await conn.rollback()
-                    logger.exception(f"Error deleting meal: {e}")
-                    raise
-                    
+                
+                return False
+                
     except Exception as e:
-        logger.exception(f"Critical error in delete_meal: {e}")
+        logger.exception(f"Error deleting meal {meal_id}: {e}")
         return False
 
 
@@ -562,88 +531,54 @@ async def parse_gpt_response(response: str) -> Dict:
         logger.error(f"Unexpected parse error: {e}")
         raise MealParseError(f"Ошибка парсинга: {e}")
 
-async def delete_multiple_meals(meal_ids: list[int], user_id: int) -> int:
-    """
-    Удаляет несколько приемов пищи и пересчитывает итоги
-    
-    Returns:
-        int - количество удаленных приемов
-    """
+async def delete_multiple_meals(meal_ids: list, user_id: int) -> int:
+    """Удаляет несколько приемов пищи по их ID"""
     if not meal_ids:
+        logger.warning("delete_multiple_meals called with empty meal_ids")
         return 0
     
     try:
         async with mysql.pool.acquire() as conn:
-            async with conn.cursor() as cur:
-                await conn.begin()
+            # ✅ ИЗМЕНИТЬ ЭТУ СТРОКУ:
+            async with conn.cursor(aiomysql.DictCursor) as cur:  # ← добавить aiomysql.DictCursor
                 
-                try:
-                    # Получаем даты всех удаляемых приемов
-                    placeholders = ','.join(['%s'] * len(meal_ids))
-                    query = f"""SELECT DISTINCT meal_date FROM meals_history 
-                               WHERE id IN ({placeholders}) AND tg_id = %s"""
-                    
-                    await cur.execute(query, (*meal_ids, user_id))
-                    dates = await cur.fetchall()
-                    
-                    if not dates:
-                        await conn.rollback()
-                        return 0
-                    
-                    # Удаляем приемы пищи
-                    delete_query = f"""DELETE FROM meals_history 
-                                      WHERE id IN ({placeholders}) AND tg_id = %s"""
-                    await cur.execute(delete_query, (*meal_ids, user_id))
-                    deleted_count = cur.rowcount
-                    
-                    if deleted_count == 0:
-                        await conn.rollback()
-                        return 0
-                    
-                    # Пересчитываем итоги для всех затронутых дат
-                    for date_row in dates:
-                        meal_date = date_row["meal_date"]
-                        
-                        await cur.execute(
-                            """INSERT INTO daily_totals 
-                                (tg_id, date, total_calories, total_protein, 
-                                 total_fat, total_carbs, meals_count)
-                            SELECT 
-                                tg_id, 
-                                meal_date,
-                                COALESCE(SUM(calories), 0), 
-                                COALESCE(SUM(protein), 0), 
-                                COALESCE(SUM(fat), 0), 
-                                COALESCE(SUM(carbs), 0), 
-                                COUNT(*)
-                            FROM meals_history
-                            WHERE tg_id = %s AND meal_date = %s
-                            GROUP BY tg_id, meal_date
-                            ON DUPLICATE KEY UPDATE
-                                total_calories = VALUES(total_calories),
-                                total_protein = VALUES(total_protein),
-                                total_fat = VALUES(total_fat),
-                                total_carbs = VALUES(total_carbs),
-                                meals_count = VALUES(meals_count)""",
-                            (user_id, meal_date)
-                        )
-                    
-                    await conn.commit()
-                    logger.info(f"✅ Deleted {deleted_count} meals for user {user_id}")
-                    return deleted_count
-                    
-                except Exception as e:
-                    await conn.rollback()
-                    logger.exception(f"Error deleting multiple meals: {e}")
-                    raise
-                    
+                # Получаем уникальную дату для инвалидации кэша
+                placeholders = ', '.join(['%s'] * len(meal_ids))
+                
+                await cur.execute(
+                    f"""SELECT DISTINCT meal_date 
+                    FROM meals_history 
+                    WHERE id IN ({placeholders}) AND tg_id = %s""",
+                    (*meal_ids, user_id)
+                )
+                
+                dates_to_invalidate = await cur.fetchall()
+                
+                # Удаляем приемы пищи
+                await cur.execute(
+                    f"""DELETE FROM meals_history 
+                    WHERE id IN ({placeholders}) AND tg_id = %s""",
+                    (*meal_ids, user_id)
+                )
+                
+                deleted_count = cur.rowcount
+                
+                # Инвалидируем кэш для всех дат
+                if deleted_count > 0:
+                    from app.db.redis_client import redis
+                    for date_row in dates_to_invalidate:
+                        meal_date = date_row["meal_date"]  # ← теперь работает как dict
+                        cache_key = f"meals:summary:{user_id}:{meal_date}"
+                        await redis.delete(cache_key)
+                        logger.info(f"[Meals] Invalidated cache for date {meal_date}")
+                
+                logger.info(f"[Meals] Deleted {deleted_count} meals for user {user_id}")
+                return deleted_count
+                
     except Exception as e:
-        logger.exception(f"Critical error in delete_multiple_meals: {e}")
-        return 0    
-    
-    
- # ДОПОЛНЕНИЯ К app/services/meals.py
-# Добавьте эти функции в конец файла
+        logger.exception(f"Error deleting multiple meals: {e}")
+        logger.error(f"Critical error in delete_multiple_meals: {e}")
+        return 0
 
 
 
