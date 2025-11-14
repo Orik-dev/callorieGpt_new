@@ -30,8 +30,9 @@ from app.tasks.daily_food_reset import reset_daily_food
 from app.tasks.broadcast import send_broadcast
 from app.tasks.gpt_queue import (
     process_gpt_request,
-    confirm_meal_addition,  # ✅ ДОБАВЛЕНО
-    cancel_meal_addition     # ✅ ДОБАВЛЕНО
+    process_meal_edit,
+    process_calculation_only,
+    process_meal_delete,
 )
 from app.db.redis_client import init_arq_redis
 from app.utils.logger import setup_logger
@@ -63,13 +64,13 @@ async def shutdown(ctx):
 class WorkerSettings:
     """Настройки ARQ воркера"""
     
-    # ✅ ИСПРАВЛЕНИЕ: Добавлены функции для обработки подтверждения/отмены
     functions = [
         try_all_autopays,
         send_broadcast,
         process_gpt_request,
-        confirm_meal_addition,  # ✅ ДОБАВЛЕНО
-        cancel_meal_addition,   # ✅ ДОБАВЛЕНО
+        process_meal_edit,
+        process_calculation_only,  # ✅ НОВАЯ ФУНКЦИЯ
+        process_meal_delete,       # ✅ НОВАЯ ФУНКЦИЯ
     ]
     
     # Крон-задачи (выполняются по расписанию)

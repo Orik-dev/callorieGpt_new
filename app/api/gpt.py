@@ -1,482 +1,640 @@
-# import json
-# import httpx
-# from app.config import settings
-# import logging
-
-# logger = logging.getLogger(__name__)
-
-# # УЛУЧШЕННЫЙ ПРОМПТ - четкие инструкции
-# OPENAI_PROMPT = """Ты — точный ассистент по подсчету калорий и нутриентов.
-
-# 🎯 ТВОЯ ЗАДАЧА: Проанализировать ТОЛЬКО ТО, ЧТО ПОЛЬЗОВАТЕЛЬ ОТПРАВИЛ СЕЙЧАС (текст или фото).
-# НЕ добавляй блюда которые не видишь. НЕ повторяй то, что было в истории.
-
-# ФОРМАТ ОТВЕТА (ТОЛЬКО валидный JSON):
-
-# {
-#   "items": [
-#     {
-#       "name": "Название блюда",
-#       "weight_grams": 200,
-#       "calories": 450.5,
-#       "protein": 25.0,
-#       "fat": 15.0,
-#       "carbs": 50.0,
-#       "confidence": 0.85
-#     }
-#   ],
-#   "notes": "Краткий совет или рекомендация"
-# }
-
-# 🚨 КРИТИЧЕСКИ ВАЖНЫЕ ПРАВИЛА:
-
-# 1. ЕСЛИ ЭТО НЕ ЕДА:
-#    ❌ "велосипед", "машина", мат, непристойности → items=[] и notes="Это не продукт питания"
-#    ❌ НЕ пытайся найти калории для не-еды!
-
-# 2. ОДНО СЛОВО = ОДНО БЛЮДО (НЕ ДУБЛИРУЙ!):
-#    ✅ "гречка" → ОДНО блюдо "Гречка вареная" 150г
-#    ✅ "курица" → ОДНО блюдо "Куриная грудка" 150г
-#    ❌ НЕ создавай 2-3 одинаковых блюда из одного слова!
-
-# 3. ПЕРЕЧИСЛЕНИЕ через "и", "с", запятую:
-#    ✅ "гречка с курицей" → ДВА блюда: гречка 150г + курица 150г
-#    ✅ "яблоко и банан" → ДВА блюда
-#    ✅ "рис, мясо, салат" → ТРИ блюда
-
-# 4. СТАНДАРТНЫЕ ПОРЦИИ (если вес НЕ указан):
-#    • Гарнир (каша, макароны, рис): 150г
-#    • Мясо/птица/рыба: 150г
-#    • Фрукт средний: 150г
-#    • Овощной салат: 200г
-#    • Суп: 300мл
-
-# 5. ЕСЛИ УКАЗАН ВЕС - ИСПОЛЬЗУЙ ЕГО:
-#    ✅ "гречка 200г" → weight_grams: 200
-#    ✅ "два яблока" → 2 блюда по 150г
-#    ✅ "половина пиццы" → 400г (половина стандартной ~800г)
-
-# 6. НА ФОТО:
-#    • Определи ВСЕ блюда которые видишь
-#    • Оцени вес по размеру тарелки (стандарт 24см)
-#    • 1/4 тарелки ≈ 100-150г, 1/2 ≈ 200-300г, полная ≈ 400-500г
-
-# 7. РЕКОМЕНДАЦИИ в "notes":
-#    • Персональные советы по питанию
-#    • Что добавить/убрать для баланса
-#    • Примеры: "Добавьте овощей", "Отличный баланс БЖУ", "Много углеводов - добавьте белка"
-
-# 8. CONFIDENCE (уверенность):
-#    • 0.9-1.0: четко видно продукт И вес
-#    • 0.7-0.9: продукт ясен, вес примерный
-#    • 0.5-0.7: грубая оценка
-#    • <0.5: очень неуверенная оценка
-
-# 9. ВАЛИДАЦИЯ:
-#    • Калории ≈ (белки×4) + (жиры×9) + (углеводы×4) ±10%
-#    • Все числа положительные
-#    • Вес 1-2000г
-
-# ПРИМЕРЫ:
-
-# Запрос: "гречка"
-# Ответ: {
-#   "items": [{"name": "Гречка вареная", "weight_grams": 150, "calories": 150, "protein": 5.0, "fat": 1.0, "carbs": 30.0, "confidence": 0.8}],
-#   "notes": "Добавьте белок (мясо, яйца) для сбалансированного приема пищи"
-# }
-
-# Запрос: "гречка с курицей"
-# Ответ: {
-#   "items": [
-#     {"name": "Гречка вареная", "weight_grams": 150, "calories": 150, "protein": 5.0, "fat": 1.0, "carbs": 30.0, "confidence": 0.8},
-#     {"name": "Куриная грудка", "weight_grams": 150, "calories": 165, "protein": 31.0, "fat": 3.6, "carbs": 0.0, "confidence": 0.8}
-#   ],
-#   "notes": "Отличное сочетание - хороший баланс белков и углеводов"
-# }
-
-# Запрос: "велосипед"
-# Ответ: {
-#   "items": [],
-#   "notes": "Это не продукт питания. Пожалуйста, отправьте фото еды или опишите что вы съели."
-# }
-
-# ПОМНИ: Анализируй ТОЛЬКО текущий запрос! Не добавляй лишнего!
-# """
-
-
-# async def ai_request(
-#     user_id: int,
-#     model: str = None,
-#     text: str = None,
-#     image_link: str = None
-# ) -> tuple[int, str]:
-#     """
-#     Отправляет запрос к OpenAI API
-    
-#     Returns:
-#         tuple[status_code, response_text]
-#     """
-#     if model is None:
-#         model = settings.openai_default_model
-    
-#     try:
-#         async with httpx.AsyncClient(timeout=60.0) as client:
-#             if not text and not image_link:
-#                 logger.warning(f"[GPT] User {user_id}: empty request")
-#                 return 400, ""
-
-#             messages = [
-#                 {"role": "system", "content": OPENAI_PROMPT}
-#             ]
-            
-#             user_content = []
-            
-#             if text:
-#                 user_content.append({
-#                     "type": "text",
-#                     "text": text
-#                 })
-            
-#             if image_link:
-#                 user_content.append({
-#                     "type": "image_url",
-#                     "image_url": {
-#                         "url": image_link,
-#                         "detail": "high"
-#                     }
-#                 })
-            
-#             messages.append({
-#                 "role": "user",
-#                 "content": user_content
-#             })
-
-#             payload = {
-#                 "model": model,
-#                 "messages": messages,
-#                 "temperature": 0.2,
-#                 "max_tokens": 2000,
-#                 "response_format": {"type": "json_object"}
-#             }
-            
-#             headers = {
-#                 "Authorization": f"Bearer {settings.openai_api_key}",
-#                 "Content-Type": "application/json"
-#             }
-
-#             logger.info(
-#                 f"[GPT] User {user_id}: sending request "
-#                 f"(model={model}, text={bool(text)}, image={bool(image_link)})"
-#             )
-            
-#             response = await client.post(
-#                 settings.openai_api_url,
-#                 headers=headers,
-#                 json=payload
-#             )
-            
-#             if response.status_code != 200:
-#                 logger.error(
-#                     f"[GPT] User {user_id}: API error {response.status_code}: "
-#                     f"{response.text[:500]}"
-#                 )
-#                 return 400, ""
-
-#             result = response.json()
-#             reply = result["choices"][0]["message"]["content"]
-            
-#             usage = result.get("usage", {})
-#             logger.info(
-#                 f"[GPT] User {user_id}: success "
-#                 f"(tokens: {usage.get('total_tokens', 0)}, "
-#                 f"response: {len(reply)} chars)"
-#             )
-            
-#             return 200, reply
-
-#     except httpx.TimeoutException:
-#         logger.error(f"[GPT] User {user_id}: timeout after 60s")
-#         return 408, ""
-#     except httpx.HTTPError as e:
-#         logger.error(f"[GPT] User {user_id}: HTTP error: {e}")
-#         return 400, ""
-#     except Exception as e:
-#         logger.exception(f"[GPT] User {user_id}: unexpected error: {e}")
-#         return 400, ""
-
-
-import json
-import httpx
-from app.config import settings
 import logging
+import json
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.exceptions import TelegramBadRequest
+from app.api.gpt import ai_request
+from app.services.user import get_user_by_id
+from app.services.meals import (
+    parse_gpt_response,
+    save_meals,
+    get_today_summary,
+    get_last_meal,
+    update_meal,
+    delete_multiple_meals,
+    delete_meal,
+    MealParseError
+)
+from app.db.mysql import mysql
+from app.bot.bot import bot
+import pytz
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-# УЛУЧШЕННЫЙ ПРОМПТ - персонализированные рекомендации
-OPENAI_PROMPT = """Ты — точный ассистент по подсчету калорий и нутриентов.
 
-🎯 ТВОЯ ЗАДАЧА: Проанализировать ТОЛЬКО ТО, ЧТО ПОЛЬЗОВАТЕЛЬ ОТПРАВИЛ СЕЙЧАС (текст или фото).
-НЕ добавляй блюда которые не видишь. НЕ повторяй то, что было в истории.
-
-ФОРМАТ ОТВЕТА (ТОЛЬКО валидный JSON):
-
-{
-  "items": [
-    {
-      "name": "Название блюда",
-      "weight_grams": 200,
-      "calories": 450.5,
-      "protein": 25.0,
-      "fat": 15.0,
-      "carbs": 50.0,
-      "confidence": 0.85
-    }
-  ],
-  "notes": "Персонализированная рекомендация"
-}
-
-🚨 КРИТИЧЕСКИ ВАЖНЫЕ ПРАВИЛА:
-
-1. ЕСЛИ ЭТО НЕ ЕДА:
-   ❌ "велосипед", "машина", мат, непристойности → items=[] и notes="Это не продукт питания"
-   ❌ НЕ пытайся найти калории для не-еды!
-
-2. ОДНО СЛОВО = ОДНО БЛЮДО (НЕ ДУБЛИРУЙ!):
-   ✅ "гречка" → ОДНО блюдо "Гречка вареная" 150г
-   ✅ "курица" → ОДНО блюдо "Куриная грудка" 150г
-   ❌ НЕ создавай 2-3 одинаковых блюда из одного слова!
-
-3. ПЕРЕЧИСЛЕНИЕ через "и", "с", запятую:
-   ✅ "гречка с курицей" → ДВА блюда: гречка 150г + курица 150г
-   ✅ "яблоко и банан" → ДВА блюда
-   ✅ "рис, мясо, салат" → ТРИ блюда
-
-4. СТАНДАРТНЫЕ ПОРЦИИ (если вес НЕ указан):
-   • Гарнир (каша, макароны, рис): 150г
-   • Мясо/птица/рыба: 150г
-   • Фрукт средний: 150г
-   • Овощной салат: 200г
-   • Суп: 300мл
-
-5. ЕСЛИ УКАЗАН ВЕС - ИСПОЛЬЗУЙ ЕГО:
-   ✅ "гречка 200г" → weight_grams: 200
-   ✅ "два яблока" → 2 блюда по 150г
-   ✅ "половина пиццы" → 400г (половина стандартной ~800г)
-
-6. НА ФОТО:
-   • Определи ВСЕ блюда которые видишь
-   • Оцени вес по размеру тарелки (стандарт 24см)
-   • 1/4 тарелки ≈ 100-150г, 1/2 ≈ 200-300г, полная ≈ 400-500г
-
-7. ПЕРСОНАЛИЗИРОВАННЫЕ РЕКОМЕНДАЦИИ в "notes":
-
-Анализируй БЖУ блюда и давай КОНКРЕТНЫЕ советы:
-
-📊 ОПТИМАЛЬНЫЙ ПРИЕМ:
-- 400-600 ккал
-- 20-30г белка
-- 10-20г жиров
-- 40-60г углеводов
-
-✅ ХОРОШО СБАЛАНСИРОВАНО (белки 20-35г, жиры 10-25г, углеводы 40-70г):
-- "Отличный баланс БЖУ! Это полноценный прием пищи для насыщения"
-- "Хорошее сочетание белков и углеводов - даст энергию на 3-4 часа"
-
-⚠️ МАЛО БЕЛКА (<15г в приеме):
-- "Мало белка для насыщения - добавьте яйца (2шт = 12г), творог (100г = 18г) или курицу (150г = 30г)"
-- "Рекомендую 20-30г белка на прием - добавьте рыбу, мясо или бобовые"
-
-⚠️ МНОГО УГЛЕВОДОВ (>70г без белка):
-- "Много углеводов без белка - добавьте курицу (150г), рыбу (150г) или яйца (2шт) для стабильного сахара"
-- "Для баланса добавьте 150г мяса/рыбы и овощной салат (200г)"
-
-⚠️ МНОГО ЖИРОВ (>30г в приеме):
-- "Высокая жирность - следите за общим калоражем дня, не более 2200 ккал"
-- "Жирное блюдо - сбалансируйте следующий прием белком и овощами"
-
-⚠️ МАЛО КАЛОРИЙ (<250):
-- "Легкий перекус - не забудьте о полноценном приеме пищи (400-600 ккал) в течение 3-4 часов"
-
-⚠️ МНОГО КАЛОРИЙ (>800):
-- "Калорийный прием - уменьшите порции в остальные приемы или увеличьте активность"
-- "Сытное блюдо - следующий прием сделайте легким (салат, овощи, белок)"
-
-🥗 НЕТ ОВОЩЕЙ (если только мясо/каши без клетчатки):
-- "Добавьте овощной салат (200г) для клетчатки, витаминов и лучшего усвоения"
-- "Рекомендую добавить овощей - они улучшат пищеварение и дадут витамины"
-
-🍎 ТОЛЬКО ФРУКТЫ/СЛАДКОЕ (быстрые углеводы >50г):
-- "Быстрые углеводы - сахар резко поднимется и упадет. Добавьте белок (орехи, творог) для стабильности"
-
-💪 ОТЛИЧНЫЙ БАЛАНС (все в норме):
-- "Идеальное соотношение БЖУ - такой прием дает энергию и насыщение!"
-- "Сбалансированный состав - отличный выбор для здорового питания"
-
-🍽 ВРЕМЯ ЕДЫ:
-- "Перед сном (за 2-3 часа) лучше легкая пища: творог, рыба, овощи"
-- "После тренировки важен белок (30-40г) + углеводы (40-60г) для восстановления"
-
-Примеры правильных рекомендаций:
-
-1. Макароны 200г (12б/2ж/70у, 350 ккал):
-   "Много углеводов без белка - добавьте курицу (150г = 30г белка) или рыбу для баланса и насыщения"
-
-2. Куриная грудка 250г (55б/28ж/0у, 480 ккал):
-   "Отличный белковый прием! Добавьте овощной салат (200г) для клетчатки и витаминов"
-
-3. Овощной салат 150г (2б/5ж/8у, 80 ккал):
-   "Легкий перекус - не забудьте о полноценном приеме пищи (400-600 ккал) в течение 3 часов"
-
-4. Бургер (28б/35ж/58у, 650 ккал):
-   "Калорийное блюдо с высоким содержанием жиров - следующие приемы сделайте легкими (салаты, белок)"
-
-5. Гречка с курицей (35б/12ж/50у, 450 ккал):
-   "Идеальный баланс БЖУ! Добавьте овощей (200г) для витаминов - и это будет идеальный прием пищи"
-
-8. CONFIDENCE (уверенность):
-   • 0.9-1.0: четко видно продукт И вес
-   • 0.7-0.9: продукт ясен, вес примерный
-   • 0.5-0.7: грубая оценка
-   • <0.5: очень неуверенная оценка
-
-9. ВАЛИДАЦИЯ:
-   • Калории ≈ (белки×4) + (жиры×9) + (углеводы×4) ±10%
-   • Все числа положительные
-   • Вес 1-2000г
-
-ПРИМЕРЫ:
-
-Запрос: "гречка"
-Ответ: {
-  "items": [{"name": "Гречка вареная", "weight_grams": 150, "calories": 150, "protein": 5.0, "fat": 1.0, "carbs": 30.0, "confidence": 0.8}],
-  "notes": "Мало белка для насыщения - добавьте курицу (150г = 30г белка), яйца (2шт = 12г) или творог (100г = 18г)"
-}
-
-Запрос: "гречка с курицей"
-Ответ: {
-  "items": [
-    {"name": "Гречка вареная", "weight_grams": 150, "calories": 150, "protein": 5.0, "fat": 1.0, "carbs": 30.0, "confidence": 0.8},
-    {"name": "Куриная грудка", "weight_grams": 150, "calories": 165, "protein": 31.0, "fat": 3.6, "carbs": 0.0, "confidence": 0.8}
-  ],
-  "notes": "Отличное сочетание белков и углеводов! Добавьте овощной салат (200г) для клетчатки и витаминов"
-}
-
-Запрос: "велосипед"
-Ответ: {
-  "items": [],
-  "notes": "Это не продукт питания. Пожалуйста, отправьте фото еды или опишите что вы съели."
-}
-
-Запрос: "пицца целая"
-Ответ: {
-  "items": [{"name": "Пицца Маргарита", "weight_grams": 800, "calories": 2000, "protein": 80.0, "fat": 80.0, "carbs": 220.0, "confidence": 0.75}],
-  "notes": "Очень калорийный прием (2000 ккал) - это дневная норма! Разделите на 2-3 приема или уменьшите порции в остальные приемы"
-}
-
-ПОМНИ: 
-- Анализируй ТОЛЬКО текущий запрос!
-- Давай КОНКРЕТНЫЕ рекомендации с цифрами (не просто "добавьте белок", а "добавьте курицу 150г = 30г белка")
-- Учитывай реальный баланс БЖУ блюда
-- Будь полезным и практичным!
-"""
+async def refund_token(user_id: int):
+    """Возвращает токен при ошибке"""
+    async with mysql.pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE users_tbl SET free_tokens = free_tokens + 1 WHERE tg_id = %s",
+                (user_id,)
+            )
+    logger.info(f"[GPT Queue] Token refunded for user {user_id}")
 
 
-async def ai_request(
-    user_id: int,
-    model: str = None,
-    text: str = None,
-    image_link: str = None
-) -> tuple[int, str]:
+async def delete_message_safe(chat_id: int, message_id: int):
     """
-    Отправляет запрос к OpenAI API
+    Безопасное удаление сообщения (не падает при ошибке)
+    """
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+        logger.debug(f"[GPT Queue] Deleted status message {message_id}")
+    except TelegramBadRequest as e:
+        if "message to delete not found" in str(e).lower():
+            logger.debug(f"[GPT Queue] Message {message_id} already deleted")
+        else:
+            logger.warning(f"[GPT Queue] Failed to delete message {message_id}: {e}")
+    except Exception as e:
+        logger.warning(f"[GPT Queue] Unexpected error deleting message {message_id}: {e}")
+
+
+async def process_gpt_request(ctx, user_id: int, chat_id: int, message_id: int, text: str, image_url: str = None):
+    """
+    Обработка запроса к GPT для расчета калорий
     
-    Returns:
-        tuple[status_code, response_text]
+    НОВАЯ ЛОГИКА: Сразу сохраняет в БД, показывает итоги + кнопку отмены
+    ✅ Удаляет статусное сообщение после обработки
     """
-    if model is None:
-        model = settings.openai_default_model
+    logger.info(f"[GPT Queue] Processing request for user {user_id}")
     
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            if not text and not image_link:
-                logger.warning(f"[GPT] User {user_id}: empty request")
-                return 400, ""
-
-            messages = [
-                {"role": "system", "content": OPENAI_PROMPT}
-            ]
-            
-            user_content = []
-            
-            if text:
-                user_content.append({
-                    "type": "text",
-                    "text": text
-                })
-            
-            if image_link:
-                user_content.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": image_link,
-                        "detail": "high"
-                    }
-                })
-            
-            messages.append({
-                "role": "user",
-                "content": user_content
-            })
-
-            payload = {
-                "model": model,
-                "messages": messages,
-                "temperature": 0.2,
-                "max_tokens": 2000,
-                "response_format": {"type": "json_object"}
-            }
-            
-            headers = {
-                "Authorization": f"Bearer {settings.openai_api_key}",
-                "Content-Type": "application/json"
-            }
-
-            logger.info(
-                f"[GPT] User {user_id}: sending request "
-                f"(model={model}, text={bool(text)}, image={bool(image_link)})"
+        user = await get_user_by_id(user_id)
+        if not user:
+            logger.error(f"[GPT Queue] User {user_id} not found")
+            await delete_message_safe(chat_id, message_id)
+            return
+        
+        user_tz = user.get('timezone', 'UTC')
+        
+        logger.info(f"[GPT Queue] Sending request to GPT API for user {user_id}")
+        code, gpt_response = await ai_request(
+            user_id=user_id,
+            text=text,
+            image_link=image_url
+        )
+        
+        if code != 200 or not gpt_response:
+            logger.error(f"[GPT Queue] Empty response from GPT for user {user_id}")
+            await delete_message_safe(chat_id, message_id)
+            await bot.send_message(
+                chat_id=chat_id,
+                text="❌ Не удалось обработать запрос. Попробуйте еще раз.",
+                parse_mode="HTML"
             )
-            
-            response = await client.post(
-                settings.openai_api_url,
-                headers=headers,
-                json=payload
+            await refund_token(user_id)
+            return
+        
+        try:
+            parsed_data = await parse_gpt_response(gpt_response)
+            logger.info(f"[GPT Queue] Parsed {len(parsed_data.get('items', []))} meals for user {user_id}")
+        except MealParseError as e:
+            logger.error(f"[GPT Queue] Parse error for user {user_id}: {e}")
+            await delete_message_safe(chat_id, message_id)
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"❌ Ошибка обработки: {str(e)}\n\nПопробуйте переформулировать запрос.",
+                parse_mode="HTML"
             )
-            
-            if response.status_code != 200:
-                logger.error(
-                    f"[GPT] User {user_id}: API error {response.status_code}: "
-                    f"{response.text[:500]}"
+            await refund_token(user_id)
+            return
+        
+        items = parsed_data.get('items', [])
+        notes = parsed_data.get('notes', '')
+        
+        # Проверка на "не еда"
+        if not items or parsed_data.get('is_not_food'):
+            logger.warning(f"[GPT Queue] Not food detected for user {user_id}")
+            await delete_message_safe(chat_id, message_id)
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"❌ {notes or 'Это не продукт питания. Отправьте фото еды или опишите блюдо.'}",
+                parse_mode="HTML"
+            )
+            await refund_token(user_id)
+            return
+        
+        # ✅ СРАЗУ СОХРАНЯЕМ В БД (без подтверждения)
+        result = await save_meals(user_id, parsed_data, user_tz, image_url)
+        added_meal_ids = result.get('added_meal_ids', [])
+        
+        logger.info(f"[GPT Queue] Saved meals for user {user_id}, IDs: {added_meal_ids}")
+        
+        # Получаем обновленные итоги за день
+        summary = await get_today_summary(user_id, user_tz)
+        totals = summary["totals"]
+        
+        # Формируем сообщение
+        tz = pytz.timezone(user_tz)
+        today = datetime.now(tz).strftime("%d.%m.%Y")
+        
+        message_text = "✅ <b>Добавлено в рацион:</b>\n\n"
+        
+        for meal in items:
+            message_text += f"🍽 <b>{meal['name']}</b>\n"
+            message_text += f"   {meal['weight_grams']}г • "
+            message_text += f"{meal['calories']} ккал • "
+            message_text += f"{meal['protein']}б • {meal['fat']}ж • {meal['carbs']}у\n\n"
+        
+        if notes:
+            message_text += f"💡 <b>{notes}</b>\n\n"
+        
+        message_text += "━━━━━━━━━━━━━━━━\n"
+        message_text += f"📊 <b>Итоги за {today}:</b>\n\n"
+        message_text += f"🔥 Калории: <b>{float(totals['total_calories']):.0f}</b> ккал\n"
+        message_text += f"🥩 Белки: <b>{float(totals['total_protein']):.1f}</b> г\n"
+        message_text += f"🧈 Жиры: <b>{float(totals['total_fat']):.1f}</b> г\n"
+        message_text += f"🍞 Углеводы: <b>{float(totals['total_carbs']):.1f}</b> г\n"
+        message_text += f"🍽 Приемов: {totals['meals_count']}\n"
+        message_text += "━━━━━━━━━━━━━━━━\n\n"
+        message_text += "💡 <i>Команда /food для просмотра истории</i>"
+        
+        # Кнопки
+        buttons = []
+        
+        # Кнопка отмены (60 секунд)
+        if added_meal_ids:
+            meal_ids_str = ','.join(map(str, added_meal_ids))
+            buttons.append([
+                InlineKeyboardButton(
+                    text="🗑 Отменить добавление",
+                    callback_data=f"undo_last:{meal_ids_str}"
                 )
-                return 400, ""
+            ])
+        
+        # Кнопка показа всех приемов
+        buttons.append([
+            InlineKeyboardButton(
+                text="📋 Все приемы за день",
+                callback_data="show_today"
+            )
+        ])
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        
+        # ✅ УДАЛЯЕМ статусное сообщение и отправляем результат
+        await delete_message_safe(chat_id, message_id)
+        await bot.send_message(
+            chat_id=chat_id,
+            text=message_text,
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        
+        logger.info(f"[GPT Queue] Successfully processed and saved for user {user_id}")
+        
+    except Exception as e:
+        logger.exception(f"[GPT Queue] Unexpected error for user {user_id}: {e}")
+        try:
+            await delete_message_safe(chat_id, message_id)
+            await bot.send_message(
+                chat_id=chat_id,
+                text="❌ Произошла ошибка при обработке. Попробуйте еще раз.",
+                parse_mode="HTML"
+            )
+        except:
+            pass
+        await refund_token(user_id)
 
-            result = response.json()
-            reply = result["choices"][0]["message"]["content"]
+
+async def process_meal_edit(ctx, user_id: int, chat_id: int, message_id: int, text: str):
+    """
+    Обработка текстового редактирования последнего приема пищи
+    
+    Примеры команд:
+    - "исправь последнее - менее жирное"
+    - "сделай менее калорийным"
+    - "убери гречку"
+    
+    ✅ Удаляет статусное сообщение после обработки
+    """
+    logger.info(f"[GPT Queue] Processing meal edit for user {user_id}: {text}")
+    
+    try:
+        user = await get_user_by_id(user_id)
+        if not user:
+            await delete_message_safe(chat_id, message_id)
+            return
+        
+        user_tz = user.get('timezone', 'UTC')
+        
+        # Получаем последний прием пищи
+        last_meal = await get_last_meal(user_id, user_tz)
+        
+        if not last_meal:
+            await delete_message_safe(chat_id, message_id)
+            await bot.send_message(
+                chat_id=chat_id,
+                text="❌ Нет приемов пищи для редактирования.\n\nСначала добавьте блюдо.",
+                parse_mode="HTML"
+            )
+            await refund_token(user_id)
+            return
+        
+        # Формируем промпт для GPT
+        edit_prompt = f"""Пользователь хочет отредактировать последний прием пищи.
+
+ТЕКУЩИЕ ДАННЫЕ:
+Название: {last_meal['food_name']}
+Вес: {last_meal['weight_grams']}г
+Калории: {last_meal['calories']} ккал
+Белки: {last_meal['protein']}г
+Жиры: {last_meal['fat']}г
+Углеводы: {last_meal['carbs']}г
+
+ЗАПРОС ПОЛЬЗОВАТЕЛЯ: {text}
+
+Верни обновленные данные в JSON формате:
+{{
+  "items": [
+    {{
+      "name": "обновленное название",
+      "weight_grams": вес,
+      "calories": калории,
+      "protein": белки,
+      "fat": жиры,
+      "carbs": углеводы,
+      "confidence": 0.9
+    }}
+  ],
+  "notes": "Что изменилось"
+}}
+
+ВАЖНО: 
+- Если пользователь просит "менее жирное" - уменьши жиры на 20-30% и пересчитай калории.
+- Если "менее калорийное" - уменьши порцию на 20-30%.
+- Если "больше" - увеличь на 20-30%.
+- Если указан конкретный вес - установи его.
+"""
+        
+        code, gpt_response = await ai_request(
+            user_id=user_id,
+            text=edit_prompt
+        )
+        
+        if code != 200 or not gpt_response:
+            await delete_message_safe(chat_id, message_id)
+            await bot.send_message(
+                chat_id=chat_id,
+                text="❌ Не удалось обработать редактирование.",
+                parse_mode="HTML"
+            )
+            await refund_token(user_id)
+            return
+        
+        parsed_data = await parse_gpt_response(gpt_response)
+        items = parsed_data.get('items', [])
+        notes = parsed_data.get('notes', '')
+        
+        if not items:
+            await delete_message_safe(chat_id, message_id)
+            await bot.send_message(
+                chat_id=chat_id,
+                text="❌ Не удалось обработать редактирование.",
+                parse_mode="HTML"
+            )
+            await refund_token(user_id)
+            return
+        
+        # Обновляем прием пищи в БД
+        new_data = items[0]
+        await update_meal(
+            meal_id=last_meal['id'],
+            user_id=user_id,
+            food_name=new_data['name'],
+            weight_grams=new_data['weight_grams'],
+            calories=new_data['calories'],
+            protein=new_data['protein'],
+            fat=new_data['fat'],
+            carbs=new_data['carbs']
+        )
+        
+        # Получаем обновленные итоги
+        summary = await get_today_summary(user_id, user_tz)
+        totals = summary["totals"]
+        
+        message_text = "✅ <b>Прием пищи обновлен:</b>\n\n"
+        message_text += f"🍽 <b>{new_data['name']}</b>\n"
+        message_text += f"   {new_data['weight_grams']}г • "
+        message_text += f"{new_data['calories']} ккал • "
+        message_text += f"{new_data['protein']}б • {new_data['fat']}ж • {new_data['carbs']}у\n\n"
+        
+        if notes:
+            message_text += f"💡 {notes}\n\n"
+        
+        message_text += "━━━━━━━━━━━━━━━━\n"
+        message_text += "📊 <b>Обновленные итоги:</b>\n\n"
+        message_text += f"🔥 {float(totals['total_calories']):.0f} ккал\n"
+        message_text += f"🥩 {float(totals['total_protein']):.1f}г\n"
+        message_text += f"🧈 {float(totals['total_fat']):.1f}г\n"
+        message_text += f"🍞 {float(totals['total_carbs']):.1f}г\n"
+        
+        # ✅ УДАЛЯЕМ статусное сообщение и отправляем результат
+        await delete_message_safe(chat_id, message_id)
+        await bot.send_message(
+            chat_id=chat_id,
+            text=message_text,
+            parse_mode="HTML"
+        )
+        
+        logger.info(f"[GPT Queue] Successfully edited meal for user {user_id}")
+        
+    except Exception as e:
+        logger.exception(f"[GPT Queue] Error editing meal for user {user_id}: {e}")
+        await delete_message_safe(chat_id, message_id)
+        await bot.send_message(
+            chat_id=chat_id,
+            text="❌ Ошибка при редактировании.",
+            parse_mode="HTML"
+        )
+        await refund_token(user_id)
+
+
+async def process_calculation_only(ctx, user_id: int, chat_id: int, message_id: int, text: str):
+    """
+    Обработка запроса "только посчитать" - БЕЗ добавления в рацион
+    
+    Примеры:
+    - "посчитай калории в гречке 200г"
+    - "сколько калорий в яблоке"
+    - "КБЖУ банана"
+    
+    ✅ Удаляет статусное сообщение после обработки
+    """
+    logger.info(f"[GPT Queue] Processing calculation only for user {user_id}")
+    
+    try:
+        user = await get_user_by_id(user_id)
+        if not user:
+            logger.error(f"[GPT Queue] User {user_id} not found")
+            await delete_message_safe(chat_id, message_id)
+            return
+        
+        # Отправляем запрос к GPT
+        code, gpt_response = await ai_request(
+            user_id=user_id,
+            text=text
+        )
+        
+        if code != 200 or not gpt_response:
+            await delete_message_safe(chat_id, message_id)
+            await bot.send_message(
+                chat_id=chat_id,
+                text="❌ Не удалось обработать запрос. Попробуйте еще раз.",
+                parse_mode="HTML"
+            )
+            return
+        
+        try:
+            parsed_data = await parse_gpt_response(gpt_response)
+        except MealParseError as e:
+            logger.error(f"[GPT Queue] Parse error for user {user_id}: {e}")
+            await delete_message_safe(chat_id, message_id)
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"❌ Ошибка обработки: {str(e)}",
+                parse_mode="HTML"
+            )
+            return
+        
+        items = parsed_data.get('items', [])
+        notes = parsed_data.get('notes', '')
+        
+        if not items:
+            await delete_message_safe(chat_id, message_id)
+            await bot.send_message(
+                chat_id=chat_id,
+                text="❌ Не удалось распознать блюда.",
+                parse_mode="HTML"
+            )
+            return
+        
+        # Формируем сообщение с расчетами (БЕЗ добавления в БД)
+        total_calories = sum(m['calories'] for m in items)
+        total_protein = sum(m['protein'] for m in items)
+        total_fat = sum(m['fat'] for m in items)
+        total_carbs = sum(m['carbs'] for m in items)
+        
+        message_text = "🔢 <b>Расчет калорийности:</b>\n\n"
+        
+        for meal in items:
+            message_text += f"🍽 <b>{meal['name']}</b>\n"
+            message_text += f"   {meal['weight_grams']}г • "
+            message_text += f"{meal['calories']} ккал • "
+            message_text += f"{meal['protein']}б • {meal['fat']}ж • {meal['carbs']}у\n\n"
+        
+        message_text += "━━━━━━━━━━━━━━━━\n"
+        message_text += "📊 <b>ИТОГО:</b>\n\n"
+        message_text += f"🔥 {total_calories} ккал\n"
+        message_text += f"🥩 Белки: {total_protein} г\n"
+        message_text += f"🧈 Жиры: {total_fat} г\n"
+        message_text += f"🍞 Углеводы: {total_carbs} г\n"
+        
+        if notes:
+            message_text += f"\n💡 <b>{notes}</b>\n"
+        
+        message_text += "\n━━━━━━━━━━━━━━━━\n"
+        message_text += "ℹ️ <i>Это только расчет, данные НЕ добавлены в рацион.</i>\n\n"
+        message_text += "💡 Чтобы добавить, отправьте описание без команд расчета."
+        
+        # ✅ УДАЛЯЕМ статусное сообщение и отправляем результат
+        await delete_message_safe(chat_id, message_id)
+        await bot.send_message(
+            chat_id=chat_id,
+            text=message_text,
+            parse_mode="HTML"
+        )
+        
+        logger.info(f"[GPT Queue] Calculation completed for user {user_id} (not saved)")
+        
+    except Exception as e:
+        logger.exception(f"[GPT Queue] Unexpected error in calculation for user {user_id}: {e}")
+        await delete_message_safe(chat_id, message_id)
+        await bot.send_message(
+            chat_id=chat_id,
+            text="❌ Произошла ошибка при расчете.",
+            parse_mode="HTML"
+        )
+
+
+async def process_meal_delete(ctx, user_id: int, chat_id: int, message_id: int, text: str):
+    """
+    Обработка текстового удаления приема пищи
+    
+    Примеры команд:
+    - "убери последнее"
+    - "удали гречку"
+    - "очисти рацион"
+    
+    ✅ Удаляет статусное сообщение после обработки
+    """
+    logger.info(f"[GPT Queue] Processing meal delete for user {user_id}: {text}")
+    
+    try:
+        user = await get_user_by_id(user_id)
+        if not user:
+            await delete_message_safe(chat_id, message_id)
+            return
+        
+        user_tz = user.get('timezone', 'UTC')
+        text_lower = text.lower()
+        
+        # Проверяем что именно удалять
+        if "всё" in text_lower or "все" in text_lower or "рацион" in text_lower:
+            # Удалить все приемы за сегодня
+            summary = await get_today_summary(user_id, user_tz)
+            meals = summary.get("meals", [])
             
-            usage = result.get("usage", {})
-            logger.info(
-                f"[GPT] User {user_id}: success "
-                f"(tokens: {usage.get('total_tokens', 0)}, "
-                f"response: {len(reply)} chars)"
+            if not meals:
+                await delete_message_safe(chat_id, message_id)
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text="📭 Сегодня нет приемов пищи для удаления.",
+                    parse_mode="HTML"
+                )
+                await refund_token(user_id)
+                return
+            
+            meal_ids = [meal['id'] for meal in meals]
+            deleted_count = await delete_multiple_meals(meal_ids, user_id)
+            
+            await delete_message_safe(chat_id, message_id)
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"✅ Удалено приемов пищи: <b>{deleted_count}</b>\n\nРацион за сегодня очищен.",
+                parse_mode="HTML"
             )
             
-            return 200, reply
-
-    except httpx.TimeoutException:
-        logger.error(f"[GPT] User {user_id}: timeout after 60s")
-        return 408, ""
-    except httpx.HTTPError as e:
-        logger.error(f"[GPT] User {user_id}: HTTP error: {e}")
-        return 400, ""
+            logger.info(f"[GPT Queue] Deleted all meals for user {user_id}")
+            return
+        
+        # Удалить последнее
+        if "последн" in text_lower:
+            last_meal = await get_last_meal(user_id, user_tz)
+            
+            if not last_meal:
+                await delete_message_safe(chat_id, message_id)
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text="❌ Нет приемов пищи для удаления.",
+                    parse_mode="HTML"
+                )
+                await refund_token(user_id)
+                return
+            
+            success = await delete_meal(last_meal['id'], user_id)
+            
+            if success:
+                summary = await get_today_summary(user_id, user_tz)
+                totals = summary["totals"]
+                
+                message_text = f"✅ <b>Удалено:</b> {last_meal['food_name']}\n\n"
+                message_text += "━━━━━━━━━━━━━━━━\n"
+                message_text += "📊 <b>Обновленные итоги:</b>\n\n"
+                message_text += f"🔥 {float(totals['total_calories']):.0f} ккал\n"
+                message_text += f"🥩 {float(totals['total_protein']):.1f}г\n"
+                message_text += f"🧈 {float(totals['total_fat']):.1f}г\n"
+                message_text += f"🍞 {float(totals['total_carbs']):.1f}г\n"
+                
+                await delete_message_safe(chat_id, message_id)
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=message_text,
+                    parse_mode="HTML"
+                )
+                
+                logger.info(f"[GPT Queue] Deleted last meal for user {user_id}")
+            else:
+                await delete_message_safe(chat_id, message_id)
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text="❌ Не удалось удалить прием пищи.",
+                    parse_mode="HTML"
+                )
+            
+            return
+        
+        # Удалить по названию блюда
+        summary = await get_today_summary(user_id, user_tz)
+        meals = summary.get("meals", [])
+        
+        if not meals:
+            await delete_message_safe(chat_id, message_id)
+            await bot.send_message(
+                chat_id=chat_id,
+                text="📭 Сегодня нет приемов пищи.",
+                parse_mode="HTML"
+            )
+            await refund_token(user_id)
+            return
+        
+        # Ищем блюдо по частичному совпадению
+        meal_to_delete = None
+        for meal in reversed(meals):  # Ищем с конца (последние приемы)
+            meal_name_lower = meal['food_name'].lower()
+            # Убираем служебные слова
+            search_text = text_lower.replace('убери', '').replace('удали', '').replace('очисти', '').strip()
+            
+            if search_text in meal_name_lower or meal_name_lower in search_text:
+                meal_to_delete = meal
+                break
+        
+        if meal_to_delete:
+            success = await delete_meal(meal_to_delete['id'], user_id)
+            
+            if success:
+                summary = await get_today_summary(user_id, user_tz)
+                totals = summary["totals"]
+                
+                message_text = f"✅ <b>Удалено:</b> {meal_to_delete['food_name']}\n\n"
+                message_text += "━━━━━━━━━━━━━━━━\n"
+                message_text += "📊 <b>Обновленные итоги:</b>\n\n"
+                message_text += f"🔥 {float(totals['total_calories']):.0f} ккал\n"
+                message_text += f"🥩 {float(totals['total_protein']):.1f}г\n"
+                message_text += f"🧈 {float(totals['total_fat']):.1f}г\n"
+                message_text += f"🍞 {float(totals['total_carbs']):.1f}г\n"
+                
+                await delete_message_safe(chat_id, message_id)
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=message_text,
+                    parse_mode="HTML"
+                )
+                
+                logger.info(f"[GPT Queue] Deleted meal by name for user {user_id}")
+            else:
+                await delete_message_safe(chat_id, message_id)
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text="❌ Не удалось удалить прием пищи.",
+                    parse_mode="HTML"
+                )
+        else:
+            # Не нашли блюдо - показываем список
+            text = "❓ <b>Блюдо не найдено</b>\n\n"
+            text += "Сегодня у вас:\n\n"
+            
+            for idx, meal in enumerate(meals[-5:], 1):  # Последние 5
+                time = meal["meal_datetime"].strftime("%H:%M")
+                text += f"{idx}. {time} — {meal['food_name']}\n"
+            
+            text += "\n💡 Попробуйте указать название точнее"
+            
+            await delete_message_safe(chat_id, message_id)
+            await bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode="HTML"
+            )
+            
+            await refund_token(user_id)
+        
     except Exception as e:
-        logger.exception(f"[GPT] User {user_id}: unexpected error: {e}")
-        return 400, ""
+        logger.exception(f"[GPT Queue] Error deleting meal for user {user_id}: {e}")
+        await delete_message_safe(chat_id, message_id)
+        await bot.send_message(
+            chat_id=chat_id,
+            text="❌ Ошибка при удалении.",
+            parse_mode="HTML"
+        )
+        await refund_token(user_id)

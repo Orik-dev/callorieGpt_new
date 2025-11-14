@@ -128,6 +128,103 @@ async def parse_gpt_response(response: str) -> Dict:
         raise MealParseError(f"Ошибка парсинга: {e}")
 
 
+# async def save_meals(
+#     user_id: int,
+#     parsed_data: Dict,
+#     user_tz: str = "Europe/Moscow",
+#     image_file_id: Optional[str] = None
+# ) -> Dict:
+#     """
+#     Сохраняет прием пищи в БД и обновляет дневные итоги
+    
+#     Args:
+#         user_id: Telegram ID пользователя
+#         parsed_data: Распарсенные данные от GPT
+#         user_tz: Часовой пояс пользователя
+#         image_file_id: ID фото в Telegram (если было)
+        
+#     Returns:
+#         Dict с обновленными итогами дня
+#     """
+#     try:
+#         # Получаем текущее время в timezone пользователя
+#         tz = pytz.timezone(user_tz)
+#         now = datetime.now(tz)
+#         today = now.date()
+        
+#         async with mysql.pool.acquire() as conn:
+#             async with conn.cursor() as cur:
+#                 await conn.begin()
+                
+#                 try:
+#                     # Сохраняем каждое блюдо
+#                     for item in parsed_data["items"]:
+#                         await cur.execute(
+#                             """INSERT INTO meals_history 
+#                             (tg_id, meal_date, meal_datetime, food_name, weight_grams,
+#                              calories, protein, fat, carbs, confidence_score, 
+#                              gpt_raw_response, image_file_id)
+#                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+#                             (
+#                                 user_id,
+#                                 today,
+#                                 now,
+#                                 item["name"][:255],
+#                                 int(item["weight_grams"]),
+#                                 Decimal(str(item["calories"])),
+#                                 Decimal(str(item["protein"])),
+#                                 Decimal(str(item["fat"])),
+#                                 Decimal(str(item["carbs"])),
+#                                 Decimal(str(item.get("confidence", 0.8))),
+#                                 json.dumps(parsed_data, ensure_ascii=False),
+#                                 image_file_id
+#                             )
+#                         )
+                    
+#                     # Пересчитываем итоги дня (атомарно)
+#                     await cur.execute(
+#                         """INSERT INTO daily_totals 
+#                             (tg_id, date, total_calories, total_protein, 
+#                              total_fat, total_carbs, meals_count)
+#                         SELECT 
+#                             tg_id, 
+#                             meal_date,
+#                             SUM(calories), 
+#                             SUM(protein), 
+#                             SUM(fat), 
+#                             SUM(carbs), 
+#                             COUNT(*)
+#                         FROM meals_history
+#                         WHERE tg_id = %s AND meal_date = %s
+#                         GROUP BY tg_id, meal_date
+#                         ON DUPLICATE KEY UPDATE
+#                             total_calories = VALUES(total_calories),
+#                             total_protein = VALUES(total_protein),
+#                             total_fat = VALUES(total_fat),
+#                             total_carbs = VALUES(total_carbs),
+#                             meals_count = VALUES(meals_count)""",
+#                         (user_id, today)
+#                     )
+                    
+#                     await conn.commit()
+                    
+#                     logger.info(
+#                         f"✅ Saved {len(parsed_data['items'])} meals for user {user_id} "
+#                         f"on {today}"
+#                     )
+                    
+#                     # Получаем обновленные итоги
+#                     return await get_today_summary(user_id, user_tz)
+                    
+#                 except Exception as e:
+#                     await conn.rollback()
+#                     logger.exception(f"Error saving meals for user {user_id}: {e}")
+#                     raise
+                    
+#     except Exception as e:
+#         logger.exception(f"Critical error in save_meals: {e}")
+#         raise
+
 async def save_meals(
     user_id: int,
     parsed_data: Dict,
@@ -144,13 +241,14 @@ async def save_meals(
         image_file_id: ID фото в Telegram (если было)
         
     Returns:
-        Dict с обновленными итогами дня
+        Dict с обновленными итогами дня и ID добавленных блюд
     """
     try:
-        # Получаем текущее время в timezone пользователя
         tz = pytz.timezone(user_tz)
         now = datetime.now(tz)
         today = now.date()
+        
+        added_meal_ids = []  # ✅ Список ID добавленных блюд
         
         async with mysql.pool.acquire() as conn:
             async with conn.cursor() as cur:
@@ -180,6 +278,9 @@ async def save_meals(
                                 image_file_id
                             )
                         )
+                        
+                        # ✅ Получаем ID добавленного блюда
+                        added_meal_ids.append(cur.lastrowid)
                     
                     # Пересчитываем итоги дня (атомарно)
                     await cur.execute(
@@ -210,11 +311,14 @@ async def save_meals(
                     
                     logger.info(
                         f"✅ Saved {len(parsed_data['items'])} meals for user {user_id} "
-                        f"on {today}"
+                        f"on {today}, IDs: {added_meal_ids}"
                     )
                     
                     # Получаем обновленные итоги
-                    return await get_today_summary(user_id, user_tz)
+                    summary = await get_today_summary(user_id, user_tz)
+                    summary['added_meal_ids'] = added_meal_ids  # ✅ Добавляем ID
+                    
+                    return summary
                     
                 except Exception as e:
                     await conn.rollback()
@@ -224,7 +328,6 @@ async def save_meals(
     except Exception as e:
         logger.exception(f"Critical error in save_meals: {e}")
         raise
-
 
 async def get_today_summary(user_id: int, user_tz: str = "Europe/Moscow") -> Dict:
     """
@@ -903,4 +1006,157 @@ def format_meal_time(meal_datetime: datetime, user_tz: str = "Europe/Moscow") ->
         return "00:00"
     except Exception as e:
         logger.error(f"Error formatting meal time: {e}")
-        return "00:00"    
+        return "00:00"
+
+# ✅ ДОБАВИТЬ ЭТИ ФУНКЦИИ В КОНЕЦ ФАЙЛА app/services/meals.py
+
+async def get_last_meal(user_id: int, user_tz: str = "Europe/Moscow"):
+    """
+    Получает последний прием пищи за сегодня
+    
+    Returns:
+        Dict с данными приема или None
+    """
+    try:
+        tz = pytz.timezone(user_tz)
+        today = datetime.now(tz).date()
+        
+        meal = await mysql.fetchone(
+            """SELECT * FROM meals_history
+            WHERE tg_id = %s AND meal_date = %s
+            ORDER BY meal_datetime DESC
+            LIMIT 1""",
+            (user_id, today)
+        )
+        
+        return meal
+        
+    except Exception as e:
+        logger.exception(f"Error getting last meal for user {user_id}: {e}")
+        return None
+
+
+async def update_meal(
+    meal_id: int,
+    user_id: int,
+    food_name: str = None,
+    weight_grams: int = None,
+    calories: float = None,
+    protein: float = None,
+    fat: float = None,
+    carbs: float = None
+):
+    """
+    Обновляет прием пищи в БД
+    
+    Args:
+        meal_id: ID приема пищи
+        user_id: ID пользователя (для проверки прав)
+        food_name, weight_grams, calories, protein, fat, carbs: Новые значения
+    """
+    try:
+        from decimal import Decimal
+        
+        async with mysql.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await conn.begin()
+                
+                try:
+                    # Проверяем принадлежность приема пользователю
+                    await cur.execute(
+                        "SELECT meal_date FROM meals_history WHERE id = %s AND tg_id = %s FOR UPDATE",
+                        (meal_id, user_id)
+                    )
+                    
+                    result = await cur.fetchone()
+                    if not result:
+                        logger.warning(f"[Meals] Meal {meal_id} not found or access denied for user {user_id}")
+                        return False
+                    
+                    meal_date = result["meal_date"]
+                    
+                    # Обновляем прием пищи
+                    update_fields = []
+                    values = []
+                    
+                    if food_name is not None:
+                        update_fields.append("food_name = %s")
+                        values.append(food_name[:255])
+                    
+                    if weight_grams is not None:
+                        update_fields.append("weight_grams = %s")
+                        values.append(int(weight_grams))
+                    
+                    if calories is not None:
+                        update_fields.append("calories = %s")
+                        values.append(Decimal(str(calories)))
+                    
+                    if protein is not None:
+                        update_fields.append("protein = %s")
+                        values.append(Decimal(str(protein)))
+                    
+                    if fat is not None:
+                        update_fields.append("fat = %s")
+                        values.append(Decimal(str(fat)))
+                    
+                    if carbs is not None:
+                        update_fields.append("carbs = %s")
+                        values.append(Decimal(str(carbs)))
+                    
+                    if not update_fields:
+                        logger.warning(f"[Meals] No fields to update for meal {meal_id}")
+                        return False
+                    
+                    values.extend([meal_id, user_id])
+                    
+                    await cur.execute(
+                        f"""UPDATE meals_history 
+                        SET {', '.join(update_fields)}
+                        WHERE id = %s AND tg_id = %s""",
+                        values
+                    )
+                    
+                    # Пересчитываем итоги дня
+                    await cur.execute(
+                        """INSERT INTO daily_totals 
+                            (tg_id, date, total_calories, total_protein, 
+                             total_fat, total_carbs, meals_count)
+                        SELECT 
+                            tg_id, 
+                            meal_date,
+                            SUM(calories), 
+                            SUM(protein), 
+                            SUM(fat), 
+                            SUM(carbs), 
+                            COUNT(*)
+                        FROM meals_history
+                        WHERE tg_id = %s AND meal_date = %s
+                        GROUP BY tg_id, meal_date
+                        ON DUPLICATE KEY UPDATE
+                            total_calories = VALUES(total_calories),
+                            total_protein = VALUES(total_protein),
+                            total_fat = VALUES(total_fat),
+                            total_carbs = VALUES(total_carbs),
+                            meals_count = VALUES(meals_count)""",
+                        (user_id, meal_date)
+                    )
+                    
+                    await conn.commit()
+                    
+                    logger.info(f"✅ Updated meal {meal_id} for user {user_id}")
+                    
+                    # Инвалидируем кэш
+                    from app.db.redis_client import redis
+                    cache_key = f"meals:summary:{user_id}:{meal_date}"
+                    await redis.delete(cache_key)
+                    
+                    return True
+                    
+                except Exception as e:
+                    await conn.rollback()
+                    logger.exception(f"Error updating meal {meal_id}: {e}")
+                    raise
+                    
+    except Exception as e:
+        logger.exception(f"Critical error in update_meal: {e}")
+        return False    
