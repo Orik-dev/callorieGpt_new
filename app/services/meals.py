@@ -1160,3 +1160,39 @@ async def update_meal(
     except Exception as e:
         logger.exception(f"Critical error in update_meal: {e}")
         return False    
+
+# Добавить в конец app/services/meals.py
+
+async def get_today_meals(user_id: int, user_tz: str = "Europe/Moscow", limit: int = None) -> list:
+    """
+    Получает приемы пищи за сегодняшний день
+    
+    Args:
+        user_id: Telegram ID пользователя
+        user_tz: Часовой пояс
+        limit: Ограничение количества (опционально)
+        
+    Returns:
+        List[Dict] с приемами пищи
+    """
+    try:
+        tz = pytz.timezone(user_tz)
+        today = datetime.now(tz).date()
+        
+        if limit:
+            query = """SELECT * FROM meals_history
+                      WHERE tg_id = %s AND meal_date = %s
+                      ORDER BY meal_datetime DESC
+                      LIMIT %s"""
+            meals = await mysql.fetchall(query, (user_id, today, limit))
+        else:
+            query = """SELECT * FROM meals_history
+                      WHERE tg_id = %s AND meal_date = %s
+                      ORDER BY meal_datetime"""
+            meals = await mysql.fetchall(query, (user_id, today))
+        
+        return meals or []
+        
+    except Exception as e:
+        logger.exception(f"Error getting today meals for user {user_id}: {e}")
+        return []    

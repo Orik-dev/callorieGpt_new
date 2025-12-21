@@ -1,303 +1,181 @@
-# import logging
-# import base64
-# import httpx
-# from app.config import settings
-
-# logger = logging.getLogger(__name__)
-
-
-# async def ai_request(
-#     user_id: int,
-#     text: str,
-#     image_link: str = None
-# ) -> tuple[int, str]:
-#     """
-#     Отправляет запрос к OpenAI API для анализа еды
-    
-#     Args:
-#         user_id: ID пользователя (для логирования)
-#         text: Текстовое описание или запрос
-#         image_link: URL изображения (опционально)
-        
-#     Returns:
-#         tuple[int, str]: (status_code, response_text)
-#     """
-#     try:
-#         logger.info(f"[GPT API] Request from user {user_id}")
-        
-#         # Формируем системный промпт
-#         system_prompt = """Ты — эксперт по питанию и подсчету калорий. 
-
-# ЗАДАЧА: Анализируй описания блюд или фото еды и возвращай точные данные о калорийности и БЖУ.
-
-# ФОРМАТ ОТВЕТА (СТРОГО JSON):
-# {
-#   "items": [
-#     {
-#       "name": "Название блюда",
-#       "weight_grams": вес в граммах (число),
-#       "calories": калории (число),
-#       "protein": белки в граммах (число),
-#       "fat": жиры в граммах (число),
-#       "carbs": углеводы в граммах (число),
-#       "confidence": уверенность 0-1 (число)
-#     }
-#   ],
-#   "notes": "Краткий комментарий или совет (опционально)"
-# }
-
-# ПРАВИЛА:
-# 1. Если это НЕ еда (например, человек, здание) - верни пустой массив items и notes с объяснением
-# 2. Если несколько блюд на фото - раздели их в отдельные элементы массива
-# 3. Вес определяй визуально или из описания (стандартные порции)
-# 4. Калории считай по формуле: (белки × 4) + (жиры × 9) + (углеводы × 4)
-# 5. Будь точным в оценках, используй базы данных о продуктах
-# 6. Если есть сомнения в весе - указывай средний размер порции
-# 7. В notes давай краткие советы (если есть что сказать)
-
-# ПРИМЕРЫ:
-
-# Запрос: "гречка 200г с курицей 150г"
-# Ответ:
-# {
-#   "items": [
-#     {"name": "Гречка отварная", "weight_grams": 200, "calories": 220, "protein": 8, "fat": 2, "carbs": 44, "confidence": 0.95},
-#     {"name": "Куриная грудка", "weight_grams": 150, "calories": 248, "protein": 47, "fat": 6, "carbs": 0, "confidence": 0.9}
-#   ],
-#   "notes": "Отличное сбалансированное блюдо с высоким содержанием белка"
-# }
-
-# Запрос: [фото кота]
-# Ответ:
-# {
-#   "items": [],
-#   "notes": "На фото изображен кот, а не продукт питания. Отправьте фото еды для анализа."
-# }"""
-
-#         # Формируем контент сообщения
-#         content = []
-        
-#         # Добавляем текст
-#         content.append({
-#             "type": "text",
-#             "text": text
-#         })
-        
-#         # Добавляем изображение если есть
-#         if image_link:
-#             content.append({
-#                 "type": "image_url",
-#                 "image_url": {
-#                     "url": image_link
-#                 }
-#             })
-        
-#         # Формируем запрос к OpenAI
-#         payload = {
-#             "model": settings.openai_default_model,
-#             "messages": [
-#                 {
-#                     "role": "system",
-#                     "content": system_prompt
-#                 },
-#                 {
-#                     "role": "user",
-#                     "content": content
-#                 }
-#             ],
-#             "temperature": 0.3,
-#             "max_tokens": 1500,
-#             "response_format": {"type": "json_object"}
-#         }
-        
-#         # Отправляем запрос
-#         async with httpx.AsyncClient(timeout=60.0) as client:
-#             response = await client.post(
-#                 settings.openai_api_url,
-#                 headers={
-#                     "Authorization": f"Bearer {settings.openai_api_key}",
-#                     "Content-Type": "application/json"
-#                 },
-#                 json=payload
-#             )
-            
-#             if response.status_code != 200:
-#                 logger.error(
-#                     f"[GPT API] Error {response.status_code}: {response.text}"
-#                 )
-#                 return response.status_code, ""
-            
-#             data = response.json()
-            
-#             # Извлекаем ответ
-#             if "choices" not in data or len(data["choices"]) == 0:
-#                 logger.error("[GPT API] No choices in response")
-#                 return 500, ""
-            
-#             message_content = data["choices"][0]["message"]["content"]
-            
-#             logger.info(
-#                 f"[GPT API] Success for user {user_id}, "
-#                 f"tokens: {data.get('usage', {}).get('total_tokens', 0)}"
-#             )
-            
-#             return 200, message_content
-            
-#     except httpx.TimeoutException:
-#         logger.error(f"[GPT API] Timeout for user {user_id}")
-#         return 504, ""
-#     except Exception as e:
-#         logger.exception(f"[GPT API] Unexpected error for user {user_id}: {e}")
-#         return 500, ""
-
+# app/api/gpt.py
 import logging
-import base64
+import asyncio
 import httpx
+from typing import Optional, Tuple
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Retry настройки
+MAX_RETRIES = 3
+RETRY_DELAYS = [1, 2, 4]  # Exponential backoff
+
+
+# Универсальный промпт для определения intent
+SYSTEM_PROMPT = """Ты — эксперт по питанию. Анализируй сообщения пользователя и определяй что он хочет.
+
+ТИПЫ НАМЕРЕНИЙ (intent):
+- "add" — добавить еду в рацион (по умолчанию для описания еды)
+- "calculate" — только посчитать калории, НЕ добавлять
+- "edit" — изменить последний прием пищи
+- "delete" — удалить что-то из рациона
+- "unknown" — непонятно что хочет пользователь
+
+ПРИЗНАКИ CALCULATE (НЕ добавлять):
+- "сколько калорий в...", "посчитай", "КБЖУ", "калорийность"
+- "а если съесть...", "что если...", "гипотетически"
+- вопросительная форма про калории
+
+ПРИЗНАКИ DELETE:
+- "убери", "удали", "отмени", "не ел", "ошибся"
+- "последнее убери", "забудь про..."
+
+ПРИЗНАКИ EDIT:
+- "исправь", "измени", "на самом деле было...", "там меньше/больше"
+- "не 200г, а 150г"
+
+ФОРМАТ ОТВЕТА (строго JSON):
+{
+  "intent": "add|calculate|edit|delete|unknown",
+  "items": [
+    {
+      "name": "Название блюда",
+      "weight_grams": число,
+      "calories": число,
+      "protein": число,
+      "fat": число,
+      "carbs": число,
+      "confidence": 0-1
+    }
+  ],
+  "edit_instruction": "что изменить (только для edit)",
+  "delete_target": "что удалить: last/all/название (только для delete)",
+  "notes": "комментарий"
+}
+
+ПРАВИЛА:
+1. Если это НЕ еда — intent="unknown", items=[], notes с объяснением
+2. Если несколько блюд — несколько элементов в items
+3. Калории = (белки × 4) + (жиры × 9) + (углеводы × 4)
+4. При сомнениях в весе — стандартная порция
+5. Для edit/delete items может быть пустым
+
+ПРИМЕРЫ:
+
+"гречка 200г с курицей" → intent="add", items=[{гречка}, {курица}]
+"сколько калорий в пицце?" → intent="calculate", items=[{пицца}]
+"убери последнее" → intent="delete", delete_target="last", items=[]
+"там было 150г, не 200" → intent="edit", edit_instruction="вес 150г", items=[]
+"привет как дела" → intent="unknown", items=[], notes="Это не про еду"
+"""
 
 
 async def ai_request(
     user_id: int,
     text: str,
-    image_link: str = None
-) -> tuple[int, str]:
+    image_link: str = None,
+    context: str = None
+) -> Tuple[int, str]:
     """
-    Отправляет запрос к OpenAI API для анализа еды
+    Отправляет запрос к OpenAI API с retry
     
     Args:
-        user_id: ID пользователя (для логирования)
-        text: Текстовое описание или запрос
+        user_id: ID пользователя
+        text: Текст запроса
         image_link: URL изображения (опционально)
+        context: Контекст (последние приемы пищи)
         
     Returns:
-        tuple[int, str]: (status_code, response_text)
+        (status_code, response_text)
     """
-    try:
-        logger.info(f"[GPT API] Request from user {user_id}")
-        
-        # Формируем системный промпт
-        system_prompt = """Ты — эксперт по питанию и подсчету калорий. 
-
-ЗАДАЧА: Анализируй описания блюд или фото еды и возвращай точные данные о калорийности и БЖУ.
-
-ФОРМАТ ОТВЕТА (СТРОГО JSON):
-{
-  "items": [
-    {
-      "name": "Название блюда",
-      "weight_grams": вес в граммах (число),
-      "calories": калории (число),
-      "protein": белки в граммах (число),
-      "fat": жиры в граммах (число),
-      "carbs": углеводы в граммах (число),
-      "confidence": уверенность 0-1 (число)
-    }
-  ],
-  "notes": "Краткий комментарий или совет (опционально)"
-}
-
-ПРАВИЛА:
-1. Если это НЕ еда (например, человек, здание) - верни пустой массив items и notes с объяснением
-2. Если несколько блюд на фото - раздели их в отдельные элементы массива
-3. Вес определяй визуально или из описания (стандартные порции)
-4. Калории считай по формуле: (белки × 4) + (жиры × 9) + (углеводы × 4)
-5. Будь точным в оценках, используй базы данных о продуктах
-6. Если есть сомнения в весе - указывай средний размер порции
-7. В notes давай краткие советы (если есть что сказать)
-
-ПРИМЕРЫ:
-
-Запрос: "гречка 200г с курицей 150г"
-Ответ:
-{
-  "items": [
-    {"name": "Гречка отварная", "weight_grams": 200, "calories": 220, "protein": 8, "fat": 2, "carbs": 44, "confidence": 0.95},
-    {"name": "Куриная грудка", "weight_grams": 150, "calories": 248, "protein": 47, "fat": 6, "carbs": 0, "confidence": 0.9}
-  ],
-  "notes": "Отличное сбалансированное блюдо с высоким содержанием белка"
-}
-
-Запрос: [фото кота]
-Ответ:
-{
-  "items": [],
-  "notes": "На фото изображен кот, а не продукт питания. Отправьте фото еды для анализа."
-}"""
-
-        # Формируем контент сообщения
-        content = []
-        
-        # Добавляем текст
+    
+    # Формируем сообщение пользователя
+    user_message = text
+    if context:
+        user_message = f"КОНТЕКСТ (последние приемы пищи сегодня):\n{context}\n\nЗАПРОС ПОЛЬЗОВАТЕЛЯ: {text}"
+    
+    # Формируем контент
+    content = [{"type": "text", "text": user_message}]
+    
+    if image_link:
         content.append({
-            "type": "text",
-            "text": text
+            "type": "image_url",
+            "image_url": {"url": image_link}
         })
-        
-        # Добавляем изображение если есть
-        if image_link:
-            content.append({
-                "type": "image_url",
-                "image_url": {
-                    "url": image_link
-                }
-            })
-        
-        # Формируем запрос к OpenAI
-        payload = {
-            "model": settings.openai_default_model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": system_prompt
-                },
-                {
-                    "role": "user",
-                    "content": content
-                }
-            ],
-            "temperature": 0.3,
-            "max_tokens": 1500,
-            "response_format": {"type": "json_object"}
-        }
-        
-        # Отправляем запрос
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                settings.openai_api_url,
-                headers={
-                    "Authorization": f"Bearer {settings.openai_api_key}",
-                    "Content-Type": "application/json"
-                },
-                json=payload
-            )
+    
+    payload = {
+        "model": settings.openai_default_model,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": content}
+        ],
+        "temperature": 0.3,
+        "max_tokens": 1500,
+        "response_format": {"type": "json_object"}
+    }
+    
+    last_error = None
+    
+    for attempt in range(MAX_RETRIES):
+        try:
+            logger.info(f"[GPT API] Request for user {user_id} (attempt {attempt + 1})")
             
-            if response.status_code != 200:
-                logger.error(
-                    f"[GPT API] Error {response.status_code}: {response.text}"
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    settings.openai_api_url,
+                    headers={
+                        "Authorization": f"Bearer {settings.openai_api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json=payload
                 )
-                return response.status_code, ""
-            
-            data = response.json()
-            
-            # Извлекаем ответ
-            if "choices" not in data or len(data["choices"]) == 0:
-                logger.error("[GPT API] No choices in response")
-                return 500, ""
-            
-            message_content = data["choices"][0]["message"]["content"]
-            
-            logger.info(
-                f"[GPT API] Success for user {user_id}, "
-                f"tokens: {data.get('usage', {}).get('total_tokens', 0)}"
-            )
-            
-            return 200, message_content
-            
-    except httpx.TimeoutException:
-        logger.error(f"[GPT API] Timeout for user {user_id}")
-        return 504, ""
-    except Exception as e:
-        logger.exception(f"[GPT API] Unexpected error for user {user_id}: {e}")
-        return 500, ""
+                
+                # Успешный ответ
+                if response.status_code == 200:
+                    data = response.json()
+                    if "choices" in data and len(data["choices"]) > 0:
+                        content = data["choices"][0]["message"]["content"]
+                        tokens = data.get("usage", {}).get("total_tokens", 0)
+                        logger.info(f"[GPT API] Success for user {user_id}, tokens: {tokens}")
+                        return 200, content
+                    else:
+                        logger.error("[GPT API] No choices in response")
+                        return 500, ""
+                
+                # Rate limit - ждём и повторяем
+                if response.status_code == 429:
+                    error_data = response.json()
+                    error_msg = error_data.get("error", {}).get("message", "")
+                    
+                    # Если это quota exceeded (нет денег) - не ретраим
+                    if "quota" in error_msg.lower():
+                        logger.error(f"[GPT API] Quota exceeded for user {user_id}")
+                        return 429, "QUOTA_EXCEEDED"
+                    
+                    # Rate limit - ждём
+                    delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
+                    logger.warning(f"[GPT API] Rate limited, waiting {delay}s")
+                    await asyncio.sleep(delay)
+                    continue
+                
+                # Другие ошибки
+                logger.error(f"[GPT API] Error {response.status_code}: {response.text[:500]}")
+                last_error = response.status_code
+                
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(RETRY_DELAYS[attempt])
+                    
+        except httpx.TimeoutException:
+            logger.error(f"[GPT API] Timeout for user {user_id}")
+            last_error = 504
+            if attempt < MAX_RETRIES - 1:
+                await asyncio.sleep(RETRY_DELAYS[attempt])
+                
+        except Exception as e:
+            logger.exception(f"[GPT API] Unexpected error: {e}")
+            last_error = 500
+            if attempt < MAX_RETRIES - 1:
+                await asyncio.sleep(RETRY_DELAYS[attempt])
+    
+    return last_error or 500, ""

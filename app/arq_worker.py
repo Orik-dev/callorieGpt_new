@@ -21,7 +21,7 @@ import logging
 from fastapi import FastAPI
 from arq import run_worker, cron
 from arq.connections import RedisSettings
-
+from app.tasks.gpt_queue import process_universal_request 
 from app.config import settings
 from app.db.mysql import init_db, close_db
 from app.tasks.subscriptions import try_all_autopays
@@ -67,10 +67,7 @@ class WorkerSettings:
     functions = [
         try_all_autopays,
         send_broadcast,
-        process_gpt_request,
-        process_meal_edit,
-        process_calculation_only,  # ✅ НОВАЯ ФУНКЦИЯ
-        process_meal_delete,       # ✅ НОВАЯ ФУНКЦИЯ
+        process_universal_request,  # ✅ ЗАМЕНИЛИ 4 функции на одну
     ]
     
     # Крон-задачи (выполняются по расписанию)
