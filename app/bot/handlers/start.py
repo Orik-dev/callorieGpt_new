@@ -1,7 +1,7 @@
 # app/bot/handlers/start.py
 from aiogram import Router
-from aiogram.filters import CommandStart
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.filters import CommandStart, Command
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, BotCommand
 from aiogram.fsm.context import FSMContext
 from app.services.user import get_or_create_user, get_user_by_id, set_user_timezone, FREE_TOKENS_COUNT
 from app.utils.telegram_helpers import escape_html, safe_send_message
@@ -10,34 +10,60 @@ import logging
 router = Router()
 logger = logging.getLogger(__name__)
 
-WELCOME_TEXT = """👋 Привет, {name}!
+WELCOME_TEXT = """Привет, {name}!
 
 Я считаю калории по фото или описанию. Просто пиши как удобно — я пойму.
 
-<b>🍽 Добавить еду:</b>
-📸 Отправь фото блюда
-📝 Или напиши своими словами
-🎤 Или надиктуй голосовым
+<b>Добавить еду:</b>
+- Отправь фото блюда
+- Или напиши: «гречка с курицей», «съел яблоко»
+- Или отправь голосовое
 
-<b>💡 Я понимаю любые формулировки:</b>
-- "съел яблоко"
-- "на обед была гречка с курицей"  
-- "перекусил бутером"
-- "выпил латте и круассан"
+<b>Примеры:</b>
+- «на обед борщ и хлеб»
+- «перекусил бананом»
+- «выпил латте»
 
-Хочешь только узнать калории без добавления? Просто спроси — я пойму по контексту.
+<b>Удалить/отменить:</b>
+- «убери последнее»
+- «удали борщ»
 
-Передумал? Скажи "убери" или "отмени" — тоже пойму.
+<b>Только посчитать:</b>
+- «сколько калорий в пицце?»
 
-<b>📋 Команды:</b>
-/food — история питания
-/profile — профиль
-/subscribe — больше запросов
+<b>Команды:</b>
+/food — рацион за сегодня
+/profile — профиль и настройки
+/subscribe — подписка
 
-У тебя <b>{tokens} запросов</b> на сегодня.
-💎 С подпиской: 25/день → /subscribe
+У тебя <b>{tokens}</b> запросов на сегодня.
+С подпиской — 25 в день → /subscribe
 
-Пользуясь ботом, ты принимаешь <a href="https://docs.google.com/document/d/10JTUzBqa3_L4RWfF8TxXdHiyYeLelvw-3rwrybZA-q4/edit?tab=t.0#heading=h.arj7vefczzgi">пользовательское соглашение</a> и <a href="https://telegram.org/privacy-tpa">политику конфиденциальности</a>."""
+━━━━━━━━━━━━━━━━
+⚠️ Данные о калориях приблизительные и не являются медицинской рекомендацией.
+
+Используя бота, ты принимаешь <a href="https://docs.google.com/document/d/10JTUzBqa3_L4RWfF8TxXdHiyYeLelvw-3rwrybZA-q4/edit?tab=t.0#heading=h.arj7vefczzgi">пользовательское соглашение</a> и <a href="https://telegram.org/privacy-tpa">политику конфиденциальности</a>.
+
+💬 Поддержка: @guard_gpt"""
+
+
+# Команды для меню бота (кнопка ☰ слева)
+BOT_COMMANDS = [
+    BotCommand(command="start", description="Перезапустить бота"),
+    BotCommand(command="food", description="Рацион за сегодня"),
+    BotCommand(command="profile", description="Мой профиль"),
+    BotCommand(command="subscribe", description="Подписка"),
+    BotCommand(command="help", description="Помощь"),
+]
+
+
+async def setup_bot_commands():
+    from app.bot.bot import bot
+    try:
+        await bot.set_my_commands(BOT_COMMANDS)
+        logger.info("✅ Bot commands menu set")
+    except Exception as e:
+        logger.error(f"❌ Failed to set bot commands: {e}")
 
 
 def get_timezone_keyboard() -> InlineKeyboardMarkup:
@@ -48,7 +74,7 @@ def get_timezone_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🇷🇺 Екатеринбург (UTC+5)", callback_data="tz:Asia/Yekaterinburg")],
         [InlineKeyboardButton(text="🇷🇺 Новосибирск (UTC+7)", callback_data="tz:Asia/Novosibirsk")],
         [InlineKeyboardButton(text="🇷🇺 Владивосток (UTC+10)", callback_data="tz:Asia/Vladivostok")],
-        [InlineKeyboardButton(text="⏭️ Пропустить", callback_data="tz:skip")]
+        [InlineKeyboardButton(text="Пропустить", callback_data="tz:skip")]
     ])
 
 
@@ -66,7 +92,7 @@ async def handle_start(message: Message, state: FSMContext):
         
         if needs_timezone_setup:
             await message.answer(
-                "🌍 <b>Настройка часового пояса</b>\n\nВыбери свой часовой пояс:",
+                "<b>Настройка часового пояса</b>\n\nВыбери свой часовой пояс:",
                 reply_markup=get_timezone_keyboard(),
                 parse_mode="HTML"
             )
@@ -84,9 +110,9 @@ async def handle_start(message: Message, state: FSMContext):
     except Exception as e:
         logger.exception(f"[Start] Error for user {user_id}: {e}")
         await message.answer(
-            f"👋 Привет! Я бот для подсчета калорий.\n\n"
-            f"Отправь фото еды или напиши что съел — я пойму.\n"
-            f"Команды: /food /profile /subscribe"
+            "Привет! Я бот для подсчёта калорий.\n\n"
+            "Отправь фото еды или напиши что съел.\n"
+            "Команды: /food /profile /subscribe"
         )
 
 
@@ -100,11 +126,11 @@ async def handle_timezone_selection(callback: CallbackQuery):
         action = callback.data.split(":", 1)[1]
         
         if action == "skip":
-            await callback.answer("⏭️ Пропущено")
+            await callback.answer("Пропущено")
             await set_user_timezone(user_id, "Europe/Moscow")
         else:
             await set_user_timezone(user_id, action)
-            await callback.answer(f"✅ Установлено")
+            await callback.answer("Установлено")
         
         user = await get_user_by_id(user_id)
         tokens = user.get("free_tokens", FREE_TOKENS_COUNT)
@@ -119,4 +145,34 @@ async def handle_timezone_selection(callback: CallbackQuery):
                 
     except Exception as e:
         logger.exception(f"[Start] Timezone error for user {user_id}: {e}")
-        await callback.answer("⚠️ Ошибка. Попробуйте /start", show_alert=True)
+        await callback.answer("Ошибка. Попробуйте /start", show_alert=True)
+
+
+@router.message(Command("help"))
+async def cmd_help(message: Message):
+    """Обработчик /help"""
+    help_text = """<b>Как пользоваться</b>
+
+<b>Добавить еду:</b>
+- Отправь фото
+- Или напиши: «борщ 300г», «два яблока»
+- Или голосовое сообщение
+
+<b>Удалить:</b>
+- «убери последнее»
+- «удали борщ»
+
+<b>Изменить:</b>
+- «там было 150г, не 200»
+
+<b>Только посчитать:</b>
+- «сколько калорий в пицце?»
+
+<b>Команды:</b>
+/food — рацион за сегодня
+/profile — профиль
+/subscribe — подписка
+
+💬 Поддержка: @guard_gpt"""
+
+    await message.answer(help_text, parse_mode="HTML")

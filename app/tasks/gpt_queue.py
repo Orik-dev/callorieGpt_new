@@ -1,7 +1,7 @@
 # app/tasks/gpt_queue.py
 """
 Универсальная обработка запросов к GPT.
-GPT сам определяет intent и возвращает структурированный ответ.
+Чистый дизайн + обработка всех edge cases.
 """
 import logging
 import json
@@ -9,7 +9,6 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from app.api.gpt import ai_request
 from app.services.user import get_user_by_id
 from app.services.meals import (
-    parse_gpt_response,
     save_meals,
     get_today_summary,
     get_last_meal,
@@ -17,7 +16,6 @@ from app.services.meals import (
     update_meal,
     delete_meal,
     delete_multiple_meals,
-    MealParseError
 )
 from app.db.mysql import mysql
 from app.db.redis_client import redis
@@ -29,47 +27,232 @@ import uuid
 
 logger = logging.getLogger(__name__)
 
-# TTL для ключа отмены
-UNDO_KEY_TTL = 60
+# ============================================
+# КОНСТАНТЫ
+# ============================================
+UNDO_KEY_TTL = 300        # 5 минут на отмену
+CALC_DATA_TTL = 600       # 10 минут для данных расчёта
+MAX_FOOD_NAME_LEN = 50    # Макс длина названия
+MAX_WEIGHT_GRAMS = 3000   # Макс вес порции
+MIN_WEIGHT_GRAMS = 1      # Мин вес
+MAX_CALORIES = 5000       # Макс калорий на блюдо
 
+
+# ============================================
+# ФОРМАТИРОВАНИЕ (чистый дизайн)
+# ============================================
+
+def format_meal_line(meal: dict, show_macros: bool = True) -> str:
+    """Форматирует одно блюдо"""
+    name = escape_html(meal.get('name', 'Блюдо')[:MAX_FOOD_NAME_LEN])
+    weight = meal.get('weight_grams', 0)
+    cal = meal.get('calories', 0)
+    
+    if show_macros:
+        p = meal.get('protein', 0)
+        f = meal.get('fat', 0)
+        c = meal.get('carbs', 0)
+        return f"<b>{name}</b>\n{weight}г · {cal} ккал · Б{p} Ж{f} У{c}"
+    else:
+        return f"<b>{name}</b> — {weight}г, {cal} ккал"
+
+
+def format_totals(totals: dict, date_str: str = None) -> str:
+    """Форматирует итоги"""
+    cal = float(totals.get('total_calories', 0))
+    p = float(totals.get('total_protein', 0))
+    f = float(totals.get('total_fat', 0))
+    c = float(totals.get('total_carbs', 0))
+    count = totals.get('meals_count', 0)
+    
+    header = f"Итого за {date_str}" if date_str else "Итого"
+    
+    return (
+        f"<b>{header}:</b>\n"
+        f"{cal:.0f} ккал · {count} приёмов\n"
+        f"Б {p:.0f}г · Ж {f:.0f}г · У {c:.0f}г"
+    )
+
+
+def format_add_success(items: list, totals: dict, date_str: str) -> str:
+    """Успешное добавление"""
+    lines = ["<b>✓ Добавлено</b>\n"]
+    
+    for meal in items:
+        lines.append(format_meal_line(meal, show_macros=True))
+        lines.append("")
+    
+    lines.append("─" * 20)
+    lines.append(format_totals(totals, date_str))
+    
+    return "\n".join(lines)
+
+
+def format_calculate_result(items: list) -> str:
+    """Результат расчёта"""
+    lines = ["<b>Расчёт калорийности</b>\n"]
+    
+    total_cal = 0
+    total_p = 0
+    total_f = 0
+    total_c = 0
+    
+    for meal in items:
+        lines.append(format_meal_line(meal, show_macros=True))
+        lines.append("")
+        total_cal += meal.get('calories', 0)
+        total_p += meal.get('protein', 0)
+        total_f += meal.get('fat', 0)
+        total_c += meal.get('carbs', 0)
+    
+    lines.append("─" * 20)
+    lines.append(f"<b>Всего:</b> {total_cal} ккал")
+    lines.append(f"Б {total_p}г · Ж {total_f}г · У {total_c}г")
+    lines.append("")
+    lines.append("<i>Не добавлено в рацион</i>")
+    
+    return "\n".join(lines)
+
+
+def format_delete_success(food_name: str, remaining_cal: float) -> str:
+    """Успешное удаление"""
+    name = escape_html(food_name[:MAX_FOOD_NAME_LEN])
+    return f"<b>✓ Удалено:</b> {name}\n\nОсталось: {remaining_cal:.0f} ккал"
+
+
+def format_edit_success(meal: dict, totals: dict) -> str:
+    """Успешное редактирование"""
+    lines = ["<b>✓ Обновлено</b>\n"]
+    lines.append(format_meal_line(meal, show_macros=True))
+    lines.append("")
+    lines.append("─" * 20)
+    lines.append(f"Итого: {float(totals.get('total_calories', 0)):.0f} ккал")
+    return "\n".join(lines)
+
+
+def format_today_meals(meals: list) -> str:
+    """Список за сегодня"""
+    if not meals:
+        return "Сегодня пока ничего не добавлено."
+    
+    lines = ["<b>Сегодня:</b>\n"]
+    
+    for meal in meals[-7:]:
+        time = meal["meal_datetime"].strftime("%H:%M")
+        name = escape_html(meal['food_name'][:30])
+        cal = meal.get('calories', 0)
+        lines.append(f"{time}  {name} — {cal} ккал")
+    
+    if len(meals) > 7:
+        lines.append(f"\n<i>...и ещё {len(meals) - 7}</i>")
+    
+    return "\n".join(lines)
+
+
+# ============================================
+# ВАЛИДАЦИЯ
+# ============================================
+
+def validate_and_fix_item(item: dict) -> dict:
+    """Валидирует данные блюда"""
+    weight = item.get('weight_grams', 100)
+    weight = max(MIN_WEIGHT_GRAMS, min(weight, MAX_WEIGHT_GRAMS))
+    
+    calories = item.get('calories', 0)
+    calories = max(0, min(calories, MAX_CALORIES))
+    
+    protein = max(0, item.get('protein', 0))
+    fat = max(0, item.get('fat', 0))
+    carbs = max(0, item.get('carbs', 0))
+    
+    name = item.get('name', 'Блюдо')[:MAX_FOOD_NAME_LEN]
+    if not name.strip():
+        name = 'Блюдо'
+    
+    return {
+        'name': name,
+        'weight_grams': weight,
+        'calories': calories,
+        'protein': protein,
+        'fat': fat,
+        'carbs': carbs,
+    }
+
+
+def validate_items(items: list) -> list:
+    """Валидирует список блюд"""
+    if not items:
+        return []
+    return [validate_and_fix_item(item) for item in items]
+
+
+# ============================================
+# HELPERS
+# ============================================
 
 async def refund_token(user_id: int):
-    """Возвращает токен при ошибке"""
-    async with mysql.pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "UPDATE users_tbl SET free_tokens = free_tokens + 1 WHERE tg_id = %s",
-                (user_id,)
-            )
-    logger.info(f"[GPT Queue] Token refunded for user {user_id}")
+    """Возвращает токен"""
+    try:
+        async with mysql.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE users_tbl SET free_tokens = free_tokens + 1 WHERE tg_id = %s",
+                    (user_id,)
+                )
+        logger.info(f"[GPT] Token refunded: user {user_id}")
+    except Exception as e:
+        logger.error(f"[GPT] Failed to refund: {e}")
 
 
 async def get_meals_context(user_id: int, user_tz: str) -> str:
-    """Получает контекст последних приемов пищи для GPT"""
+    """Контекст для GPT"""
     try:
         meals = await get_today_meals(user_id, user_tz, limit=5)
         if not meals:
             return ""
         
-        context_lines = []
+        lines = ["Сегодня добавлено:"]
         for meal in meals:
             time = meal["meal_datetime"].strftime("%H:%M")
-            context_lines.append(
-                f"- {time}: {meal['food_name']} "
-                f"({meal['calories']} ккал, {meal['weight_grams']}г)"
-            )
-        
-        return "\n".join(context_lines)
+            lines.append(f"- {time}: {meal['food_name']} ({meal['calories']} ккал)")
+        return "\n".join(lines)
     except:
         return ""
 
 
 async def save_undo_data(meal_ids: list, user_id: int) -> str:
-    """Сохраняет meal_ids в Redis для кнопки отмены"""
+    """Сохраняет для отмены"""
     key = f"undo:{user_id}:{uuid.uuid4().hex[:8]}"
     await redis.setex(key, UNDO_KEY_TTL, json.dumps(meal_ids))
     return key
 
+
+async def save_calc_data(items: list, user_id: int) -> str:
+    """Сохраняет расчёт"""
+    key = f"calc:{user_id}"
+    await redis.setex(key, CALC_DATA_TTL, json.dumps(items))
+    return key
+
+
+async def get_calc_data(user_id: int) -> list:
+    """Получает расчёт"""
+    key = f"calc:{user_id}"
+    data = await redis.get(key)
+    return json.loads(data) if data else []
+
+
+async def is_duplicate_request(user_id: int, text_hash: str) -> bool:
+    """Антидубликат"""
+    key = f"req:{user_id}:{text_hash}"
+    if await redis.exists(key):
+        return True
+    await redis.setex(key, 5, "1")
+    return False
+
+
+# ============================================
+# ГЛАВНАЯ ФУНКЦИЯ
+# ============================================
 
 async def process_universal_request(
     ctx,
@@ -79,407 +262,281 @@ async def process_universal_request(
     text: str,
     image_url: str = None
 ):
-    """
-    Универсальная обработка запроса.
-    GPT определяет intent и возвращает данные.
-    """
-    logger.info(f"[GPT Queue] Processing for user {user_id}: {text[:50]}...")
+    """Универсальная обработка"""
+    logger.info(f"[GPT] User {user_id}: {text[:50]}...")
     
     try:
+        # Антидубликат
+        text_hash = str(hash(text + str(image_url)))[-8:]
+        if await is_duplicate_request(user_id, text_hash):
+            logger.info(f"[GPT] Duplicate from {user_id}")
+            await safe_delete_message(bot, chat_id, message_id)
+            return
+        
         user = await get_user_by_id(user_id)
         if not user:
-            logger.error(f"[GPT Queue] User {user_id} not found")
             await safe_delete_message(bot, chat_id, message_id)
             return
         
         user_tz = user.get('timezone', 'Europe/Moscow')
-        
-        # Получаем контекст последних приемов
         context = await get_meals_context(user_id, user_tz)
         
-        # Запрос к GPT
+        if image_url:
+            text = f"[ФОТО ЕДЫ] {text}" if text else "[ФОТО ЕДЫ]"
+        
         code, gpt_response = await ai_request(
             user_id=user_id,
             text=text,
             image_link=image_url,
             context=context
         )
+        logger.info(f"[GPT] Raw response for {user_id}: {gpt_response[:500] if gpt_response else 'None'}...")
         
-        # Обработка ошибок API
         if code == 429 and gpt_response == "QUOTA_EXCEEDED":
             await safe_delete_message(bot, chat_id, message_id)
-            await safe_send_message(
-                bot, chat_id,
-                "⚠️ Сервис временно недоступен.\n"
-                "Попробуйте через несколько минут."
-            )
+            await safe_send_message(bot, chat_id, "Сервис временно недоступен. Попробуйте позже.")
             await refund_token(user_id)
             return
         
         if code != 200 or not gpt_response:
-            logger.error(f"[GPT Queue] Empty response for user {user_id}, code={code}")
             await safe_delete_message(bot, chat_id, message_id)
-            await safe_send_message(
-                bot, chat_id,
-                "❌ Не удалось обработать запрос. Попробуйте еще раз."
-            )
+            await safe_send_message(bot, chat_id, "Не удалось обработать. Попробуйте ещё раз.")
             await refund_token(user_id)
             return
         
-        # Парсим ответ
         try:
             data = json.loads(gpt_response)
-        except json.JSONDecodeError as e:
-            logger.error(f"[GPT Queue] JSON parse error: {e}")
+        except json.JSONDecodeError:
             await safe_delete_message(bot, chat_id, message_id)
-            await safe_send_message(
-                bot, chat_id,
-                "❌ Ошибка обработки. Попробуйте переформулировать."
-            )
+            await safe_send_message(bot, chat_id, "Ошибка распознавания. Переформулируйте.")
             await refund_token(user_id)
             return
         
         intent = data.get("intent", "add")
-        items = data.get("items", [])
+        items = validate_items(data.get("items", []))
         notes = data.get("notes", "")
         
-        logger.info(f"[GPT Queue] User {user_id}: intent={intent}, items={len(items)}")
+        logger.info(f"[GPT] User {user_id}: intent={intent}, items={len(items)}")
         
-        # Обработка по intent
+        # Роутинг
         if intent == "unknown":
-            await safe_delete_message(bot, chat_id, message_id)
-            msg = notes or "Я не понял запрос. Отправьте фото еды или опишите блюдо."
-            await safe_send_message(bot, chat_id, f"🤔 {msg}")
-            await refund_token(user_id)
-            return
-        
-        if intent == "calculate":
-            await handle_calculate(chat_id, message_id, items, notes)
-            return
-        
-        if intent == "delete":
+            await handle_unknown(user_id, chat_id, message_id, notes)
+        elif intent == "calculate":
+            await handle_calculate(user_id, chat_id, message_id, items)
+        elif intent == "add_previous":
+            await handle_add_previous(user_id, chat_id, message_id, user_tz)
+        elif intent == "delete":
             await handle_delete(user_id, chat_id, message_id, data, user_tz)
-            return
-        
-        if intent == "edit":
+        elif intent == "edit":
             await handle_edit(user_id, chat_id, message_id, data, user_tz)
-            return
-        
-        # intent == "add" (по умолчанию)
-        if not items:
-            await safe_delete_message(bot, chat_id, message_id)
-            await safe_send_message(
-                bot, chat_id,
-                f"❌ {notes or 'Не удалось распознать блюдо. Попробуйте описать подробнее.'}"
-            )
-            await refund_token(user_id)
-            return
-        
-        await handle_add(user_id, chat_id, message_id, items, notes, user_tz, image_url)
+        else:
+            if not items:
+                await safe_delete_message(bot, chat_id, message_id)
+                await safe_send_message(bot, chat_id, notes or "Не распознал еду. Опишите подробнее.")
+                await refund_token(user_id)
+                return
+            await handle_add(user_id, chat_id, message_id, items, user_tz, image_url)
         
     except Exception as e:
-        logger.exception(f"[GPT Queue] Unexpected error for user {user_id}: {e}")
+        logger.exception(f"[GPT] Error: {e}")
         try:
             await safe_delete_message(bot, chat_id, message_id)
-            await safe_send_message(
-                bot, chat_id,
-                "❌ Произошла ошибка. Попробуйте еще раз."
-            )
+            await safe_send_message(bot, chat_id, "Ошибка. Попробуйте ещё раз.")
         except:
             pass
         await refund_token(user_id)
 
 
-async def handle_add(
-    user_id: int,
-    chat_id: int,
-    message_id: int,
-    items: list,
-    notes: str,
-    user_tz: str,
-    image_url: str = None
-):
-    """Добавление блюд в рацион"""
+# ============================================
+# ОБРАБОТЧИКИ
+# ============================================
+
+async def handle_unknown(user_id: int, chat_id: int, message_id: int, notes: str):
+    """Непонятный запрос"""
+    await safe_delete_message(bot, chat_id, message_id)
+    await safe_send_message(bot, chat_id, notes or "Не понял. Отправьте фото еды или напишите что съели.")
+    await refund_token(user_id)
+
+
+async def handle_add(user_id: int, chat_id: int, message_id: int, items: list, user_tz: str, image_url: str = None):
+    """Добавление"""
     try:
-        parsed_data = {"items": items, "notes": notes}
-        result = await save_meals(user_id, parsed_data, user_tz, image_url)
-        added_meal_ids = result.get('added_meal_ids', [])
-        
-        logger.info(f"[GPT Queue] Saved meals for user {user_id}, IDs: {added_meal_ids}")
+        result = await save_meals(user_id, {"items": items, "notes": ""}, user_tz, image_url)
+        added_ids = result.get('added_meal_ids', [])
         
         summary = await get_today_summary(user_id, user_tz)
-        totals = summary["totals"]
-        
         tz = pytz.timezone(user_tz)
-        today = datetime.now(tz).strftime("%d.%m.%Y")
+        date_str = datetime.now(tz).strftime("%d.%m")
         
-        text = "✅ <b>Добавлено:</b>\n\n"
-        
-        for meal in items:
-            name = escape_html(meal.get('name', 'Блюдо'))
-            text += f"🍽 <b>{name}</b>\n"
-            text += f"   {meal.get('weight_grams', 0)}г • "
-            text += f"{meal.get('calories', 0)} ккал • "
-            text += f"{meal.get('protein', 0)}б • "
-            text += f"{meal.get('fat', 0)}ж • "
-            text += f"{meal.get('carbs', 0)}у\n\n"
-        
-        if notes:
-            text += f"💡 {escape_html(notes)}\n\n"
-        
-        text += "━━━━━━━━━━━━━━━━\n"
-        text += f"📊 <b>Итого за {today}:</b>\n"
-        text += f"🔥 {float(totals['total_calories']):.0f} ккал • "
-        text += f"🍽 {totals['meals_count']} приемов\n"
-        text += "━━━━━━━━━━━━━━━━"
+        text = format_add_success(items, summary["totals"], date_str)
         
         buttons = []
+        if added_ids:
+            undo_key = await save_undo_data(added_ids, user_id)
+            buttons.append([InlineKeyboardButton(text="Отменить", callback_data=undo_key)])
         
-        # Кнопка отмены (сохраняем в Redis)
-        if added_meal_ids:
-            undo_key = await save_undo_data(added_meal_ids, user_id)
-            buttons.append([
-                InlineKeyboardButton(
-                    text="🗑 Отменить",
-                    callback_data=undo_key  # Короткий ключ!
-                )
-            ])
-        
-        buttons.append([
-            InlineKeyboardButton(
-                text="📋 Все приемы",
-                callback_data="show_today"
-            )
-        ])
-        
-        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
         
         await safe_delete_message(bot, chat_id, message_id)
         await safe_send_message(bot, chat_id, text, keyboard)
         
     except Exception as e:
-        logger.exception(f"[GPT Queue] Error in handle_add: {e}")
+        logger.exception(f"[GPT] Add error: {e}")
         await safe_delete_message(bot, chat_id, message_id)
-        await safe_send_message(bot, chat_id, "❌ Ошибка сохранения.")
+        await safe_send_message(bot, chat_id, "Ошибка сохранения.")
         await refund_token(user_id)
 
 
-async def handle_calculate(
-    chat_id: int,
-    message_id: int,
-    items: list,
-    notes: str
-):
-    """Только расчет калорий (без добавления)"""
+async def handle_calculate(user_id: int, chat_id: int, message_id: int, items: list):
+    """Только расчёт"""
     if not items:
         await safe_delete_message(bot, chat_id, message_id)
-        await safe_send_message(bot, chat_id, "❌ Не удалось определить блюдо.")
+        await safe_send_message(bot, chat_id, "Не удалось определить блюдо.")
+        await refund_token(user_id)
         return
     
-    total_cal = sum(m.get('calories', 0) for m in items)
-    total_protein = sum(m.get('protein', 0) for m in items)
-    total_fat = sum(m.get('fat', 0) for m in items)
-    total_carbs = sum(m.get('carbs', 0) for m in items)
+    await save_calc_data(items, user_id)
+    text = format_calculate_result(items)
     
-    text = "🔢 <b>Расчет калорийности:</b>\n\n"
-    
-    for meal in items:
-        name = escape_html(meal.get('name', 'Блюдо'))
-        text += f"🍽 <b>{name}</b>\n"
-        text += f"   {meal.get('weight_grams', 0)}г • "
-        text += f"{meal.get('calories', 0)} ккал • "
-        text += f"{meal.get('protein', 0)}б • "
-        text += f"{meal.get('fat', 0)}ж • "
-        text += f"{meal.get('carbs', 0)}у\n\n"
-    
-    text += "━━━━━━━━━━━━━━━━\n"
-    text += f"📊 <b>ИТОГО:</b> {total_cal} ккал\n"
-    text += f"🥩 {total_protein}г • 🧈 {total_fat}г • 🍞 {total_carbs}г\n"
-    text += "━━━━━━━━━━━━━━━━\n\n"
-    
-    if notes:
-        text += f"💡 {escape_html(notes)}\n\n"
-    
-    text += "<i>ℹ️ Это расчет. Данные НЕ добавлены в рацион.</i>\n"
-    text += "Чтобы добавить — просто скажите что съели."
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Добавить в рацион", callback_data=f"addcalc:{user_id}")]
+    ])
     
     await safe_delete_message(bot, chat_id, message_id)
-    await safe_send_message(bot, chat_id, text)
+    await safe_send_message(bot, chat_id, text, keyboard)
 
 
-async def handle_delete(
-    user_id: int,
-    chat_id: int,
-    message_id: int,
-    data: dict,
-    user_tz: str
-):
-    """Удаление приемов пищи"""
+async def handle_add_previous(user_id: int, chat_id: int, message_id: int, user_tz: str):
+    """Добавить расчёт"""
+    items = await get_calc_data(user_id)
+    
+    if not items:
+        await safe_delete_message(bot, chat_id, message_id)
+        await safe_send_message(bot, chat_id, "Нет сохранённого расчёта. Сначала отправьте еду.")
+        await refund_token(user_id)
+        return
+    
+    await redis.delete(f"calc:{user_id}")
+    await handle_add(user_id, chat_id, message_id, items, user_tz, None)
+
+
+async def handle_delete(user_id: int, chat_id: int, message_id: int, data: dict, user_tz: str):
+    """Удаление"""
     try:
-        delete_target = data.get("delete_target", "last")
+        target = data.get("delete_target", "last")
         
-        if delete_target == "all":
+        if target == "all":
             summary = await get_today_summary(user_id, user_tz)
             meals = summary.get("meals", [])
             
             if not meals:
                 await safe_delete_message(bot, chat_id, message_id)
-                await safe_send_message(bot, chat_id, "📭 Нечего удалять — сегодня нет приемов.")
+                await safe_send_message(bot, chat_id, "Сегодня нечего удалять.")
                 await refund_token(user_id)
                 return
             
-            meal_ids = [m['id'] for m in meals]
-            deleted = await delete_multiple_meals(meal_ids, user_id)
-            
+            deleted = await delete_multiple_meals([m['id'] for m in meals], user_id)
             await safe_delete_message(bot, chat_id, message_id)
-            await safe_send_message(
-                bot, chat_id,
-                f"✅ Удалено приемов: <b>{deleted}</b>\n\nРацион очищен."
-            )
+            await safe_send_message(bot, chat_id, f"Удалено: {deleted}\nРацион очищен.")
             return
         
-        if delete_target == "last":
-            last_meal = await get_last_meal(user_id, user_tz)
+        if target == "last":
+            last = await get_last_meal(user_id, user_tz)
             
-            if not last_meal:
+            if not last:
                 await safe_delete_message(bot, chat_id, message_id)
-                await safe_send_message(bot, chat_id, "📭 Нечего удалять.")
+                await safe_send_message(bot, chat_id, "Нечего удалять.")
                 await refund_token(user_id)
                 return
             
-            success = await delete_meal(last_meal['id'], user_id)
-            
-            if success:
+            if await delete_meal(last['id'], user_id):
                 summary = await get_today_summary(user_id, user_tz)
-                totals = summary["totals"]
-                
-                text = f"✅ <b>Удалено:</b> {escape_html(last_meal['food_name'])}\n\n"
-                text += f"🔥 Осталось: {float(totals['total_calories']):.0f} ккал"
-                
+                text = format_delete_success(last['food_name'], float(summary["totals"]['total_calories']))
                 await safe_delete_message(bot, chat_id, message_id)
                 await safe_send_message(bot, chat_id, text)
             else:
                 await safe_delete_message(bot, chat_id, message_id)
-                await safe_send_message(bot, chat_id, "❌ Не удалось удалить.")
+                await safe_send_message(bot, chat_id, "Не удалось удалить.")
             return
         
-        # Удаление по названию
+        # По названию
         summary = await get_today_summary(user_id, user_tz)
         meals = summary.get("meals", [])
         
         if not meals:
             await safe_delete_message(bot, chat_id, message_id)
-            await safe_send_message(bot, chat_id, "📭 Сегодня нет приемов пищи.")
+            await safe_send_message(bot, chat_id, "Сегодня нет записей.")
             await refund_token(user_id)
             return
         
-        target_lower = delete_target.lower()
-        meal_to_delete = None
-        
+        found = None
         for meal in reversed(meals):
-            if target_lower in meal['food_name'].lower():
-                meal_to_delete = meal
+            if target.lower() in meal['food_name'].lower():
+                found = meal
                 break
         
-        if meal_to_delete:
-            success = await delete_meal(meal_to_delete['id'], user_id)
-            if success:
+        if found:
+            if await delete_meal(found['id'], user_id):
                 summary = await get_today_summary(user_id, user_tz)
-                totals = summary["totals"]
-                
-                text = f"✅ <b>Удалено:</b> {escape_html(meal_to_delete['food_name'])}\n\n"
-                text += f"🔥 Осталось: {float(totals['total_calories']):.0f} ккал"
-                
+                text = format_delete_success(found['food_name'], float(summary["totals"]['total_calories']))
                 await safe_delete_message(bot, chat_id, message_id)
                 await safe_send_message(bot, chat_id, text)
             else:
                 await safe_delete_message(bot, chat_id, message_id)
-                await safe_send_message(bot, chat_id, "❌ Не удалось удалить.")
+                await safe_send_message(bot, chat_id, "Не удалось удалить.")
         else:
-            text = "❓ <b>Не нашел такое блюдо</b>\n\nСегодня:\n"
-            for meal in meals[-5:]:
-                time = meal["meal_datetime"].strftime("%H:%M")
-                text += f"• {time} — {escape_html(meal['food_name'])}\n"
-            
             await safe_delete_message(bot, chat_id, message_id)
+            text = f"Не нашёл «{escape_html(target)}».\n\n" + format_today_meals(meals)
             await safe_send_message(bot, chat_id, text)
             await refund_token(user_id)
             
     except Exception as e:
-        logger.exception(f"[GPT Queue] Error in handle_delete: {e}")
+        logger.exception(f"[GPT] Delete error: {e}")
         await safe_delete_message(bot, chat_id, message_id)
-        await safe_send_message(bot, chat_id, "❌ Ошибка удаления.")
+        await safe_send_message(bot, chat_id, "Ошибка удаления.")
         await refund_token(user_id)
 
 
-async def handle_edit(
-    user_id: int,
-    chat_id: int,
-    message_id: int,
-    data: dict,
-    user_tz: str
-):
-    """Редактирование последнего приема пищи"""
+async def handle_edit(user_id: int, chat_id: int, message_id: int, data: dict, user_tz: str):
+    """Редактирование"""
     try:
-        last_meal = await get_last_meal(user_id, user_tz)
+        last = await get_last_meal(user_id, user_tz)
         
-        if not last_meal:
+        if not last:
             await safe_delete_message(bot, chat_id, message_id)
-            await safe_send_message(
-                bot, chat_id,
-                "❌ Нет приемов для редактирования.\nСначала добавьте блюдо."
-            )
+            await safe_send_message(bot, chat_id, "Нет записей для редактирования.")
             await refund_token(user_id)
             return
         
-        items = data.get("items", [])
-        edit_instruction = data.get("edit_instruction", "")
+        items = validate_items(data.get("items", []))
         
-        # Если GPT вернул готовые данные
-        if items and len(items) > 0:
-            new_data = items[0]
+        if items:
+            new = items[0]
             await update_meal(
-                meal_id=last_meal['id'],
+                meal_id=last['id'],
                 user_id=user_id,
-                food_name=new_data.get('name', last_meal['food_name']),
-                weight_grams=new_data.get('weight_grams', last_meal['weight_grams']),
-                calories=new_data.get('calories', last_meal['calories']),
-                protein=new_data.get('protein', last_meal['protein']),
-                fat=new_data.get('fat', last_meal['fat']),
-                carbs=new_data.get('carbs', last_meal['carbs'])
+                food_name=new.get('name', last['food_name']),
+                weight_grams=new.get('weight_grams', last['weight_grams']),
+                calories=new.get('calories', last['calories']),
+                protein=new.get('protein', last['protein']),
+                fat=new.get('fat', last['fat']),
+                carbs=new.get('carbs', last['carbs'])
             )
             
             summary = await get_today_summary(user_id, user_tz)
-            totals = summary["totals"]
-            
-            name = escape_html(new_data.get('name', last_meal['food_name']))
-            text = f"✅ <b>Обновлено:</b> {name}\n\n"
-            text += f"🍽 {new_data.get('weight_grams', 0)}г • "
-            text += f"{new_data.get('calories', 0)} ккал • "
-            text += f"{new_data.get('protein', 0)}б • "
-            text += f"{new_data.get('fat', 0)}ж • "
-            text += f"{new_data.get('carbs', 0)}у\n\n"
-            text += "━━━━━━━━━━━━━━━━\n"
-            text += f"🔥 Итого: {float(totals['total_calories']):.0f} ккал"
-            
+            text = format_edit_success(new, summary["totals"])
             await safe_delete_message(bot, chat_id, message_id)
             await safe_send_message(bot, chat_id, text)
         else:
-            # GPT не смог обработать — просим уточнить
             await safe_delete_message(bot, chat_id, message_id)
             await safe_send_message(
                 bot, chat_id,
-                "🤔 Не понял, что изменить.\n\n"
-                "<b>Примеры:</b>\n"
-                "• \"там было 150г, не 200\"\n"
-                "• \"сделай менее жирным\"\n"
-                "• \"добавь масло\"\n\n"
-                "Или опишите блюдо заново."
+                "Не понял что изменить.\n\nПримеры:\n• «там было 150г»\n• «добавь масло»"
             )
             await refund_token(user_id)
             
     except Exception as e:
-        logger.exception(f"[GPT Queue] Error in handle_edit: {e}")
+        logger.exception(f"[GPT] Edit error: {e}")
         await safe_delete_message(bot, chat_id, message_id)
-        await safe_send_message(bot, chat_id, "❌ Ошибка редактирования.")
+        await safe_send_message(bot, chat_id, "Ошибка редактирования.")
         await refund_token(user_id)

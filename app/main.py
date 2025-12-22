@@ -10,6 +10,7 @@ from app.db.redis_client import redis, init_arq_redis
 from app.config import settings
 from app.tasks.subscriptions import try_all_autopays
 from app.utils.logger import setup_logger
+from app.bot.handlers.start import setup_bot_commands 
 
 logger = logging.getLogger(__name__)
 setup_logger()
@@ -25,6 +26,8 @@ async def lifespan(app: FastAPI):
     
     # Настройка middleware для Aiogram
     setup_middlewares(app)
+    
+    await setup_bot_commands()
     
     # Разовый запуск автоплатежей с блокировкой
     lock_key = "locks:autopays:startup"

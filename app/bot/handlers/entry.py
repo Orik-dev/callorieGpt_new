@@ -166,7 +166,7 @@ async def on_photo(message: Message, **data):
         await asyncio.sleep(0.3)
         
         url = f"https://api.telegram.org/file/bot{message.bot.token}/{file.file_path}"
-        caption = message.caption or "Определи блюда на фото и рассчитай КБЖУ"
+        caption = message.caption.strip() if message.caption else ""
         
         redis = data["redis"]
         msg = await message.answer(TEXT_PROCESSING)
