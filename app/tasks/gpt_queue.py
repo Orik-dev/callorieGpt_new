@@ -535,9 +535,9 @@ async def handle_add(user_id: int, chat_id: int, message_id: int, items: list, u
             f_now = float(totals.get('total_fat', 0))
             c_now = float(totals.get('total_carbs', 0))
             text += (
-                f"\nБелки: {p_now:.0f}/{p_goal}г · "
-                f"Жиры: {f_now:.0f}/{f_goal}г · "
-                f"Углеводы: {c_now:.0f}/{c_goal}г"
+                f"\nБелки: {p_now:.0f}/{p_goal}г"
+                f"\nЖиры: {f_now:.0f}/{f_goal}г"
+                f"\nУглеводы: {c_now:.0f}/{c_goal}г"
             )
 
         # Показываем остаток запросов
