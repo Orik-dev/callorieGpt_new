@@ -1,5 +1,6 @@
 from aiogram.exceptions import TelegramBadRequest
 from aiogram import Router, F
+from aiogram.filters import Command
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     Message, CallbackQuery, LabeledPrice, PreCheckoutQuery
@@ -80,7 +81,7 @@ def stars_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-@router.message(F.text == "/subscribe")
+@router.message(Command("subscribe"))
 async def subscribe_menu(message: Message, state: FSMContext):
     """Главное меню подписки"""
     await state.clear()  # Очищаем любое предыдущее состояние

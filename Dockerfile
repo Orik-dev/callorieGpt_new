@@ -17,4 +17,4 @@ COPY ./app/init_webhook.py /app/init_webhook.py
 ENV PYTHONPATH=/app
 
 # По умолчанию запускаем сервер FastAPI через gunicorn
-CMD ["gunicorn", "app.main:app", "--workers=4", "--worker-class=uvicorn.workers.UvicornWorker", "--bind=0.0.0.0:8000"]
+CMD ["gunicorn", "app.main:app", "--workers=2", "--worker-class=uvicorn.workers.UvicornWorker", "--bind=0.0.0.0:8000"]

@@ -59,8 +59,8 @@ async def on_text(message: Message, **data):
     GPT сам определит intent (add/calculate/edit/delete).
     """
     user_id = message.from_user.id
-    text = message.text.strip()
-    
+    text = message.text.strip()[:500]
+
     # Игнорируем команды
     if text.startswith('/'):
         return

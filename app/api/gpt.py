@@ -10,6 +10,16 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 3
 RETRY_DELAYS = [1, 2, 4]
 
+# Singleton httpx client — переиспользует TCP-соединения
+_http_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(timeout=settings.openai_timeout)
+    return _http_client
+
 SYSTEM_PROMPT = """Ты — эксперт по питанию. Анализируй сообщения пользователя и определяй что он хочет.
 
 ТИПЫ НАМЕРЕНИЙ (intent):
@@ -126,63 +136,63 @@ async def ai_request(
         try:
             logger.info(f"[GPT API] Request for user {user_id} (attempt {attempt + 1})")
             
-            async with httpx.AsyncClient(timeout=settings.openai_timeout) as client:
-                response = await client.post(
-                    settings.openai_api_url,
-                    headers={
-                        "Authorization": f"Bearer {settings.openai_api_key}",
-                        "Content-Type": "application/json"
-                    },
-                    json=payload
-                )
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    
-                    if "choices" in data and len(data["choices"]) > 0:
-                        message = data["choices"][0]["message"]
-                        result = message.get("content")
-                        
-                        # Проверка на None/refusal
-                        if result is None:
-                            refusal = message.get("refusal")
-                            finish_reason = data["choices"][0].get("finish_reason")
-                            logger.error(
-                                f"[GPT API] Content is None! "
-                                f"refusal={refusal}, finish_reason={finish_reason}, "
-                                f"message={message}"
-                            )
-                            # Попробуем ещё раз
-                            if attempt < MAX_RETRIES - 1:
-                                await asyncio.sleep(RETRY_DELAYS[attempt])
-                                continue
-                            return 500, ""
-                        
-                        tokens = data.get("usage", {}).get("total_tokens", 0)
-                        logger.info(f"[GPT API] Success for user {user_id}, tokens: {tokens}")
-                        return 200, result
-                    else:
-                        logger.error(f"[GPT API] No choices: {data}")
+            client = _get_client()
+            response = await client.post(
+                settings.openai_api_url,
+                headers={
+                    "Authorization": f"Bearer {settings.openai_api_key}",
+                    "Content-Type": "application/json"
+                },
+                json=payload
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+
+                if "choices" in data and len(data["choices"]) > 0:
+                    message = data["choices"][0]["message"]
+                    result = message.get("content")
+
+                    # Проверка на None/refusal
+                    if result is None:
+                        refusal = message.get("refusal")
+                        finish_reason = data["choices"][0].get("finish_reason")
+                        logger.error(
+                            f"[GPT API] Content is None! "
+                            f"refusal={refusal}, finish_reason={finish_reason}, "
+                            f"message={message}"
+                        )
+                        # Попробуем ещё раз
+                        if attempt < MAX_RETRIES - 1:
+                            await asyncio.sleep(RETRY_DELAYS[attempt])
+                            continue
                         return 500, ""
-                
-                if response.status_code == 429:
-                    error_data = response.json()
-                    error_msg = error_data.get("error", {}).get("message", "")
-                    
-                    if "quota" in error_msg.lower():
-                        logger.error(f"[GPT API] Quota exceeded")
-                        return 429, "QUOTA_EXCEEDED"
-                    
-                    delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
-                    logger.warning(f"[GPT API] Rate limited, waiting {delay}s")
-                    await asyncio.sleep(delay)
-                    continue
-                
-                logger.error(f"[GPT API] Error {response.status_code}: {response.text[:500]}")
-                last_error = response.status_code
-                
-                if attempt < MAX_RETRIES - 1:
-                    await asyncio.sleep(RETRY_DELAYS[attempt])
+
+                    tokens = data.get("usage", {}).get("total_tokens", 0)
+                    logger.info(f"[GPT API] Success for user {user_id}, tokens: {tokens}")
+                    return 200, result
+                else:
+                    logger.error(f"[GPT API] No choices: {data}")
+                    return 500, ""
+
+            if response.status_code == 429:
+                error_data = response.json()
+                error_msg = error_data.get("error", {}).get("message", "")
+
+                if "quota" in error_msg.lower():
+                    logger.error(f"[GPT API] Quota exceeded")
+                    return 429, "QUOTA_EXCEEDED"
+
+                delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
+                logger.warning(f"[GPT API] Rate limited, waiting {delay}s")
+                await asyncio.sleep(delay)
+                continue
+
+            logger.error(f"[GPT API] Error {response.status_code}: {response.text[:500]}")
+            last_error = response.status_code
+
+            if attempt < MAX_RETRIES - 1:
+                await asyncio.sleep(RETRY_DELAYS[attempt])
                     
         except httpx.TimeoutException:
             logger.error(f"[GPT API] Timeout")

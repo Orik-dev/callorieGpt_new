@@ -1,7 +1,10 @@
 import aiomysql
+import asyncio
+import ipaddress
 import logging
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Request, Response
+from yookassa import Payment
 import pytz
 
 from app.db.mysql import mysql
@@ -13,18 +16,39 @@ yookassa_router = APIRouter()
 
 SUPPORTED_EVENTS = {"payment.succeeded", "payment.canceled", "payment.refunded"}
 
+# Доверенные IP-адреса YooKassa (из документации)
+YOOKASSA_TRUSTED_NETS = [
+    ipaddress.ip_network("185.71.76.0/27"),
+    ipaddress.ip_network("185.71.77.0/27"),
+    ipaddress.ip_network("77.75.153.0/25"),
+    ipaddress.ip_network("77.75.156.11/32"),
+    ipaddress.ip_network("77.75.156.35/32"),
+    ipaddress.ip_network("77.75.154.128/25"),
+]
+
+
+def _is_trusted_ip(ip_str: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip_str)
+        return any(addr in net for net in YOOKASSA_TRUSTED_NETS)
+    except ValueError:
+        return False
+
 
 @yookassa_router.post("/yookassa")
 async def yookassa_webhook(request: Request):
     """
     Атомарная обработка вебхука YooKassa.
-    Все апдейты происходят в одной транзакции:
-      1) фиксируем новый статус платежа,
-      2) при success — дочитываем amount/days/method_id под блокировкой,
-         переустанавливаем method_id из события (если прислали),
-      3) под FOR UPDATE считаем новую дату подписки и обновляем users_tbl.
-    После коммита отправляем уведомление пользователю.
+    Верификация: проверка IP + подтверждение статуса через API.
     """
+    # Проверка IP отправителя
+    client_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    if not client_ip:
+        client_ip = request.client.host
+    if not _is_trusted_ip(client_ip):
+        logger.warning(f"[Webhook] untrusted IP: {client_ip}")
+        return Response(status_code=403)
+
     try:
         data = await request.json()
     except Exception:
@@ -38,10 +62,17 @@ async def yookassa_webhook(request: Request):
 
     payment = data.get("object") or {}
     payment_id = payment.get("id")
-    status_event = payment.get("status")
-    if not payment_id or not status_event:
-        logger.warning("[Webhook] missing id/status")
+    if not payment_id:
+        logger.warning("[Webhook] missing id")
         return Response(status_code=400)
+
+    # Верификация: получаем актуальный статус платежа из API YooKassa
+    try:
+        real_payment = await asyncio.to_thread(Payment.find_one, payment_id)
+        status_event = real_payment.status
+    except Exception as e:
+        logger.error(f"[Webhook] Payment.find_one failed for {payment_id}: {e}")
+        return Response(status_code=500)
 
     # Быстрая идемпотентность/валидация существования
     async with mysql.pool.acquire() as conn:
