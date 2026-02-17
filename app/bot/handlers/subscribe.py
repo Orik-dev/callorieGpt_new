@@ -23,16 +23,16 @@ class EmailState(StatesGroup):
 
 # Тарифы (рубли)
 SUBSCRIBES = {
-    "key_1_month":  {"amount": 290,  "days": 30,  "desc": "1 месяц — 290₽"},
-    "key_3_month":  {"amount": 770,  "days": 90,  "desc": "3 месяца — 770₽"},
-    "key_12_month": {"amount": 2500, "days": 360, "desc": "12 месяцев — 2500₽"},
+    "key_1_month":  {"amount": 1090,  "days": 30,  "desc": "1 месяц — 1 090₽"},
+    "key_3_month":  {"amount": 2890,  "days": 90,  "desc": "3 месяца — 2 890₽"},
+    "key_12_month": {"amount": 8990, "days": 360, "desc": "12 месяцев — 8 990₽"},
 }
 
 # Цены в звёздах (XTR)
 STARS_PRICE = {
-    "key_1_month":  249,
-    "key_3_month":  690,
-    "key_12_month": 2150,
+    "key_1_month":  950,
+    "key_3_month":  2490,
+    "key_12_month": 7790,
 }
 
 

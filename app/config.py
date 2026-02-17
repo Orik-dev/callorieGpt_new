@@ -48,7 +48,7 @@ class Settings:
         # Business Logic Settings
         self.max_failed_autopay_attempts = int(os.getenv("MAX_FAILED_AUTOPAY_ATTEMPTS", 3))
         self.default_subscription_days = int(os.getenv("DEFAULT_SUBSCRIPTION_DAYS", 30))
-        self.default_subscription_amount = float(os.getenv("DEFAULT_SUBSCRIPTION_AMOUNT", 290.0))
+        self.default_subscription_amount = float(os.getenv("DEFAULT_SUBSCRIPTION_AMOUNT", 1090.0))
 
         # Logging
         self.log_level = os.getenv("LOG_LEVEL", "INFO").upper()
