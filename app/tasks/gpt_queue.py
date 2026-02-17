@@ -434,8 +434,8 @@ async def process_universal_request(
             await safe_delete_message(bot, chat_id, message_id)
             await safe_send_message(
                 bot, chat_id,
-                "Не удалось распознать еду на изображении. "
-                "Попробуйте отправить другое фото или опишите блюдо текстом."
+                "Изображение не прошло модерацию и не может быть обработано. "
+                "Отправьте фото еды или опишите блюдо текстом."
             )
             await refund_token(user_id)
             return
