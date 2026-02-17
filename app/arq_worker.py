@@ -76,8 +76,8 @@ class WorkerSettings:
     keep_result = 3600
     max_jobs = 20
     
-    max_tries = 3
-    retry_jobs = True
+    max_tries = 1
+    retry_jobs = False
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ from aiogram import Router, F
 from aiogram.types import Message
 from app.services.user import get_or_create_user
 from app.utils.audio import ogg_to_text
+from app.utils.telegram_helpers import escape_html
 from app.db.mysql import mysql
 import logging
 import asyncio
@@ -119,7 +120,7 @@ async def on_voice(message: Message, **data):
         
         logger.info(f"[Entry:Voice] User {user_id}: recognized: {text[:50]}")
         
-        await message.answer(f"🗣 Распознано: <i>{text}</i>", parse_mode="HTML")
+        await message.answer(f"🗣 Распознано: <i>{escape_html(text)}</i>", parse_mode="HTML")
         await status_msg.edit_text(TEXT_PROCESSING)
         
         redis = data["redis"]
@@ -137,7 +138,7 @@ async def on_voice(message: Message, **data):
         logger.exception(f"[Entry:Voice] Error for user {user_id}: {e}")
         try:
             await status_msg.edit_text("⚠️ Ошибка при обработке голосового.")
-        except:
+        except Exception:
             pass
         await refund_token(user_id)
 

@@ -250,7 +250,7 @@ async def get_meals_context(user_id: int, user_tz: str) -> str:
             cal = float(meal.get('calories', 0))
             lines.append(f"- {time}: {meal['food_name']} ({cal:.1f} ккал)")
         return "\n".join(lines)
-    except:
+    except Exception:
         return ""
 
 
@@ -289,7 +289,7 @@ async def is_duplicate_request(user_id: int, text_hash: str) -> bool:
     key = f"req:{user_id}:{text_hash}"
     if await redis.exists(key):
         return True
-    await redis.setex(key, 5, "1")
+    await redis.setex(key, 120, "1")
     return False
 
 
@@ -390,7 +390,7 @@ async def process_universal_request(
         try:
             await safe_delete_message(bot, chat_id, message_id)
             await safe_send_message(bot, chat_id, "Ошибка. Попробуйте ещё раз.")
-        except:
+        except Exception:
             pass
         await refund_token(user_id)
 

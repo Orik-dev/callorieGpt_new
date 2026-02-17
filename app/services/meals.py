@@ -357,41 +357,50 @@ async def _recalculate_daily_totals(cur, user_id: int, meal_date) -> None:
 
 
 async def delete_meal(meal_id: int, user_id: int) -> bool:
-    """Удаляет прием пищи и пересчитывает daily_totals"""
+    """Удаляет прием пищи и пересчитывает daily_totals (в транзакции)"""
     try:
         async with mysql.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
-                # Получаем дату для пересчёта
-                await cur.execute(
-                    "SELECT meal_date FROM meals_history WHERE id = %s AND tg_id = %s",
-                    (meal_id, user_id)
-                )
+                await conn.begin()
+                try:
+                    # Получаем дату для пересчёта
+                    await cur.execute(
+                        "SELECT meal_date FROM meals_history WHERE id = %s AND tg_id = %s",
+                        (meal_id, user_id)
+                    )
 
-                result = await cur.fetchone()
-                if not result:
-                    logger.warning(f"[Meals] Meal {meal_id} not found for user {user_id}")
+                    result = await cur.fetchone()
+                    if not result:
+                        await conn.rollback()
+                        logger.warning(f"[Meals] Meal {meal_id} not found for user {user_id}")
+                        return False
+
+                    meal_date = result["meal_date"]
+
+                    # Удаляем
+                    await cur.execute(
+                        "DELETE FROM meals_history WHERE id = %s AND tg_id = %s",
+                        (meal_id, user_id)
+                    )
+
+                    if cur.rowcount > 0:
+                        # Пересчитываем daily_totals
+                        await _recalculate_daily_totals(cur, user_id, meal_date)
+                        await conn.commit()
+
+                        # Инвалидируем кэш
+                        from app.db.redis_client import redis
+                        cache_key = f"meals:summary:{user_id}:{meal_date}"
+                        await redis.delete(cache_key)
+                        logger.info(f"[Meals] Deleted meal {meal_id}, recalculated totals for {meal_date}")
+                        return True
+
+                    await conn.rollback()
                     return False
 
-                meal_date = result["meal_date"]
-
-                # Удаляем
-                await cur.execute(
-                    "DELETE FROM meals_history WHERE id = %s AND tg_id = %s",
-                    (meal_id, user_id)
-                )
-
-                if cur.rowcount > 0:
-                    # Пересчитываем daily_totals
-                    await _recalculate_daily_totals(cur, user_id, meal_date)
-
-                    # Инвалидируем кэш
-                    from app.db.redis_client import redis
-                    cache_key = f"meals:summary:{user_id}:{meal_date}"
-                    await redis.delete(cache_key)
-                    logger.info(f"[Meals] Deleted meal {meal_id}, recalculated totals for {meal_date}")
-                    return True
-
-                return False
+                except Exception as e:
+                    await conn.rollback()
+                    raise
 
     except Exception as e:
         logger.exception(f"Error deleting meal {meal_id}: {e}")
@@ -479,36 +488,47 @@ async def delete_multiple_meals(meal_ids: list, user_id: int) -> int:
     try:
         async with mysql.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
-                placeholders = ', '.join(['%s'] * len(meal_ids))
+                await conn.begin()
+                try:
+                    placeholders = ', '.join(['%s'] * len(meal_ids))
 
-                # Получаем даты для пересчёта
-                await cur.execute(
-                    f"""SELECT DISTINCT meal_date
-                    FROM meals_history
-                    WHERE id IN ({placeholders}) AND tg_id = %s""",
-                    (*meal_ids, user_id)
-                )
-                dates_to_recalculate = await cur.fetchall()
+                    # Получаем даты для пересчёта
+                    await cur.execute(
+                        f"""SELECT DISTINCT meal_date
+                        FROM meals_history
+                        WHERE id IN ({placeholders}) AND tg_id = %s""",
+                        (*meal_ids, user_id)
+                    )
+                    dates_to_recalculate = await cur.fetchall()
 
-                # Удаляем приемы пищи
-                await cur.execute(
-                    f"""DELETE FROM meals_history
-                    WHERE id IN ({placeholders}) AND tg_id = %s""",
-                    (*meal_ids, user_id)
-                )
-                deleted_count = cur.rowcount
+                    # Удаляем приемы пищи
+                    await cur.execute(
+                        f"""DELETE FROM meals_history
+                        WHERE id IN ({placeholders}) AND tg_id = %s""",
+                        (*meal_ids, user_id)
+                    )
+                    deleted_count = cur.rowcount
 
-                # Пересчитываем daily_totals + инвалидируем кэш
-                if deleted_count > 0:
-                    from app.db.redis_client import redis
-                    for date_row in dates_to_recalculate:
-                        meal_date = date_row["meal_date"]
-                        await _recalculate_daily_totals(cur, user_id, meal_date)
-                        cache_key = f"meals:summary:{user_id}:{meal_date}"
-                        await redis.delete(cache_key)
+                    # Пересчитываем daily_totals
+                    if deleted_count > 0:
+                        for date_row in dates_to_recalculate:
+                            await _recalculate_daily_totals(cur, user_id, date_row["meal_date"])
 
-                logger.info(f"[Meals] Deleted {deleted_count} meals for user {user_id}")
-                return deleted_count
+                    await conn.commit()
+
+                    # Инвалидируем кэш после коммита
+                    if deleted_count > 0:
+                        from app.db.redis_client import redis
+                        for date_row in dates_to_recalculate:
+                            cache_key = f"meals:summary:{user_id}:{date_row['meal_date']}"
+                            await redis.delete(cache_key)
+
+                    logger.info(f"[Meals] Deleted {deleted_count} meals for user {user_id}")
+                    return deleted_count
+
+                except Exception as e:
+                    await conn.rollback()
+                    raise
 
     except Exception as e:
         logger.exception(f"Error deleting multiple meals: {e}")

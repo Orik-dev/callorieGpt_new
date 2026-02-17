@@ -1,23 +1,27 @@
 import logging
 from datetime import datetime, timedelta
 from app.db.mysql import mysql
+from app.db.redis_client import redis
 import pytz
 
 logger = logging.getLogger(__name__)
+
+LOCK_TTL = 120
 
 
 async def reset_daily_food(ctx):
     """
     Удаляет записи о еде старше 7 дней
-    
+
     Запускается ежедневно в 03:00 МСК (00:00 UTC)
-    
-    Очищает:
-    - meals_history - старше 7 дней
-    - daily_totals - старше 7 дней
-    
-    Оставляет последние 7 дней для просмотра в /food
+    Distributed lock предотвращает двойное выполнение.
     """
+    lock_key = "lock:reset_daily_food"
+    acquired = await redis.set(lock_key, "1", ex=LOCK_TTL, nx=True)
+    if not acquired:
+        logger.info("[Task] Очистка еды уже выполняется другим воркером, пропускаем")
+        return
+
     logger.info("[Task] Запуск ежедневной очистки старой еды...")
     
     try:
@@ -48,3 +52,5 @@ async def reset_daily_food(ctx):
         
     except Exception as e:
         logger.exception(f"❌ [Task] Ошибка при очистке старой еды: {e}")
+    finally:
+        await redis.delete(lock_key)

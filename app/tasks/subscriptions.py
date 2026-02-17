@@ -1,18 +1,26 @@
 import logging
 from app.db.mysql import mysql
+from app.db.redis_client import redis
 from app.services.payments_logic import try_autopay
 
 logger = logging.getLogger(__name__)
+
+LOCK_TTL = 300  # 5 минут — максимальное время выполнения
 
 
 async def try_all_autopays(ctx):
     """
     Проверяет всех пользователей с автоплатежами и пытается продлить подписку
-    
-    Вызывается:
-    - При старте приложения (с блокировкой)
-    - По крону каждый день в 03:10 UTC
+
+    Вызывается по крону каждый день в 03:10 UTC.
+    Distributed lock предотвращает двойное выполнение при нескольких воркерах.
     """
+    lock_key = "lock:try_all_autopays"
+    acquired = await redis.set(lock_key, "1", ex=LOCK_TTL, nx=True)
+    if not acquired:
+        logger.info("[Task] Автоплатежи уже выполняются другим воркером, пропускаем")
+        return
+
     logger.info("[Task] Запуск задачи автоплатежей...")
     
     try:
@@ -49,3 +57,5 @@ async def try_all_autopays(ctx):
         
     except Exception as e:
         logger.exception(f"[AutoPay Task] Критическая ошибка: {e}")
+    finally:
+        await redis.delete(lock_key)

@@ -254,8 +254,11 @@ async def handle_delete_meal(callback: CallbackQuery):
         else:
             text = f"<b>✓ Удалено</b>\n\nИтого за день: {float(totals['total_calories']):.1f} ккал"
         
-        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=None)
-        
+        try:
+            await callback.message.edit_text(text, parse_mode="HTML", reply_markup=None)
+        except TelegramBadRequest:
+            pass
+
     except Exception as e:
         logger.exception(f"[Food] Error deleting: {e}")
         await safe_callback_answer(callback, "Ошибка", show_alert=True)
@@ -293,7 +296,10 @@ async def handle_undo(callback: CallbackQuery):
             summary = await get_today_summary(user_id, user_tz)
             
             text = f"<b>✓ Отменено</b>\n\nИтого за день: {float(summary['totals']['total_calories']):.1f} ккал"
-            await callback.message.edit_text(text, reply_markup=None, parse_mode="HTML")
+            try:
+                await callback.message.edit_text(text, reply_markup=None, parse_mode="HTML")
+            except TelegramBadRequest:
+                pass
             await safe_callback_answer(callback, "Отменено")
         else:
             await safe_callback_answer(callback, "Не удалось отменить", show_alert=True)
@@ -366,8 +372,11 @@ async def handle_add_calculated(callback: CallbackQuery):
             buttons.append([InlineKeyboardButton(text="Отменить", callback_data=undo_key)])
         
         keyboard = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
-        await callback.message.edit_text("\n".join(lines), reply_markup=keyboard, parse_mode="HTML")
-        
+        try:
+            await callback.message.edit_text("\n".join(lines), reply_markup=keyboard, parse_mode="HTML")
+        except TelegramBadRequest:
+            pass
+
     except Exception as e:
         logger.exception(f"[Food] Add calculated error: {e}")
         await safe_callback_answer(callback, "Ошибка", show_alert=True)
