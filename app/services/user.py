@@ -236,15 +236,24 @@ async def update_tokens_daily():
         raise
 
 async def refund_token(user_id: int):
-    """Возвращает токен при ошибке"""
+    """Возвращает токен при ошибке (не выше максимума для типа пользователя)"""
     try:
         async with mysql.pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "UPDATE users_tbl SET free_tokens = free_tokens + 1 WHERE tg_id = %s",
-                    (user_id,)
+                    """UPDATE users_tbl
+                       SET free_tokens = free_tokens + 1
+                       WHERE tg_id = %s
+                       AND free_tokens < CASE
+                           WHEN expiration_date >= CURDATE() THEN %s
+                           ELSE %s
+                       END""",
+                    (user_id, SUBSCRIBED_TOKENS_COUNT, FREE_TOKENS_COUNT)
                 )
-        logger.info(f"[User] Token refunded: user {user_id}")
+                if cur.rowcount > 0:
+                    logger.info(f"[User] Token refunded: user {user_id}")
+                else:
+                    logger.info(f"[User] Token refund skipped (at max): user {user_id}")
     except Exception as e:
         logger.error(f"[User] Failed to refund token: {e}")
 
