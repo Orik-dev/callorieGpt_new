@@ -48,7 +48,7 @@ async def get_or_create_user(tg_id: int, tg_name: str) -> dict:
         logger.info(f"Creating new user: TG ID={tg_id}, Name={tg_name}")
         try:
             await mysql.execute(
-                """INSERT INTO users_tbl (tg_id, tg_name, free_tokens, timezone) 
+                """INSERT IGNORE INTO users_tbl (tg_id, tg_name, free_tokens, timezone)
                    VALUES (%s, %s, %s, %s)""",
                 (tg_id, tg_name, FREE_TOKENS_COUNT, 'Europe/Moscow')
             )
@@ -90,35 +90,6 @@ async def get_or_create_user(tg_id: int, tg_name: str) -> dict:
             user = fresh_user
     
     return user
-
-
-async def deduct_token(user_id: int) -> bool:
-    """
-    Списать 1 токен у пользователя (DEPRECATED)
-    
-    ⚠️ DEPRECATED: Используйте атомарное списание в handlers вместо этой функции!
-    
-    Returns:
-        True если токен списан, False если токенов нет
-    """
-    logger.warning(f"DEPRECATED: deduct_token called for user {user_id}. Use atomic UPDATE in handlers!")
-    
-    async with mysql.pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                """UPDATE users_tbl 
-                   SET free_tokens = GREATEST(free_tokens - 1, 0) 
-                   WHERE tg_id=%s AND free_tokens > 0""",
-                (user_id,)
-            )
-            success = cur.rowcount > 0
-            
-            if success:
-                logger.info(f"Token deducted for user {user_id}")
-            else:
-                logger.info(f"No tokens available for user {user_id}")
-            
-            return success
 
 
 async def extend_subscription(

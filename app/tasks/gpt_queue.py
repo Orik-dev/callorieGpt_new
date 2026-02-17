@@ -5,6 +5,7 @@
 """
 import logging
 import json
+import hashlib
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from app.api.gpt import ai_request
 from app.services.user import get_user_by_id
@@ -310,7 +311,7 @@ async def process_universal_request(
     
     try:
         # Антидубликат
-        text_hash = str(hash(text + str(image_url)))[-8:]
+        text_hash = hashlib.md5((text + str(image_url)).encode()).hexdigest()[:8]
         if await is_duplicate_request(user_id, text_hash):
             logger.info(f"[GPT] Duplicate from {user_id}")
             await safe_delete_message(bot, chat_id, message_id)

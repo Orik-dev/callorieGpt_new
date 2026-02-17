@@ -11,6 +11,8 @@ from app.utils.telegram_helpers import escape_html
 from app.db.mysql import mysql
 import logging
 import asyncio
+import base64
+from io import BytesIO
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -164,9 +166,11 @@ async def on_photo(message: Message, **data):
             return
         
         file = await message.bot.get_file(photo.file_id)
-        await asyncio.sleep(0.3)
-        
-        url = f"https://api.telegram.org/file/bot{message.bot.token}/{file.file_path}"
+
+        buf = BytesIO()
+        await message.bot.download_file(file.file_path, destination=buf)
+        image_b64 = base64.b64encode(buf.getvalue()).decode()
+        url = f"data:image/jpeg;base64,{image_b64}"
         caption = message.caption.strip() if message.caption else ""
         
         redis = data["redis"]

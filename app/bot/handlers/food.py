@@ -120,7 +120,7 @@ async def cmd_food(message: Message):
         # Предыдущие дни
         if len(history) > 1:
             for day in history[1:4]:
-                short_date = day["date"].strftime("%m%d")
+                short_date = day["date"].strftime("%Y%m%d")
                 date_text = format_date_ru(day["date"])
                 cal = float(day['total_calories'])
                 buttons.append([
@@ -188,9 +188,14 @@ async def handle_show_day(callback: CallbackQuery):
         user_id = callback.from_user.id
         short_date = callback.data.split(":")[1]
         
-        year = datetime.now().year
-        month = int(short_date[:2])
-        day = int(short_date[2:])
+        if len(short_date) == 8:
+            year = int(short_date[:4])
+            month = int(short_date[4:6])
+            day = int(short_date[6:])
+        else:
+            year = datetime.now().year
+            month = int(short_date[:2])
+            day = int(short_date[2:])
         date_str = f"{year}-{month:02d}-{day:02d}"
         
         user = await get_user_by_id(user_id)
@@ -281,7 +286,7 @@ async def handle_undo(callback: CallbackQuery):
             await safe_callback_answer(callback, "Время отмены истекло", show_alert=True)
             try:
                 await callback.message.edit_reply_markup(reply_markup=None)
-            except:
+            except Exception:
                 pass
             return
         
@@ -322,7 +327,7 @@ async def handle_add_calculated(callback: CallbackQuery):
             await safe_callback_answer(callback, "Время истекло. Отправьте заново.", show_alert=True)
             try:
                 await callback.message.edit_reply_markup(reply_markup=None)
-            except:
+            except Exception:
                 pass
             return
 

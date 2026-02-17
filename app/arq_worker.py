@@ -26,7 +26,8 @@ from app.tasks.subscriptions import try_all_autopays
 from app.tasks.daily_reset import reset_tokens
 from app.tasks.daily_food_reset import reset_daily_food
 from app.tasks.broadcast import send_broadcast
-from app.tasks.gpt_queue import process_universal_request  # ✅ НОВЫЙ ИМПОРТ
+from app.tasks.gpt_queue import process_universal_request
+from app.tasks.db_backup import backup_database
 from app.db.redis_client import init_arq_redis
 from app.utils.logger import setup_logger
 
@@ -65,6 +66,7 @@ class WorkerSettings:
         cron(reset_daily_food, hour=0, minute=0),
         cron(reset_tokens, hour=3, minute=5),
         cron(try_all_autopays, hour=3, minute=10),
+        cron(backup_database, hour={0, 6, 12, 18}, minute=30),
     ]
     
     redis_settings = RedisSettings.from_dsn(settings.redis_url)

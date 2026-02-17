@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
-# Установим зависимости для ffmpeg и flac
-RUN apt-get update && apt-get install -y ffmpeg flac git && apt-get clean
+# Установим системные зависимости
+RUN apt-get update && apt-get install -y ffmpeg git default-mysql-client && apt-get clean
 
 WORKDIR /app
 

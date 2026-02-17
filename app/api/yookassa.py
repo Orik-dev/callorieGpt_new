@@ -2,10 +2,11 @@ import aiomysql
 import logging
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Request, Response
+import pytz
 
 from app.db.mysql import mysql
 from app.bot.bot import bot
-from app.services.user import SUBSCRIBED_TOKENS_COUNT
+from app.services.user import SUBSCRIBED_TOKENS_COUNT, get_user_by_id
 
 logger = logging.getLogger(__name__)
 yookassa_router = APIRouter()
@@ -108,7 +109,14 @@ async def yookassa_webhook(request: Request):
                         (user_id,),
                     )
                     u = await cur.fetchone()
-                    today = datetime.now().date()
+                    # Получаем таймзону пользователя
+                    user_data = await get_user_by_id(user_id)
+                    user_tz = user_data.get("timezone", "Europe/Moscow") if user_data else "Europe/Moscow"
+                    try:
+                        tz = pytz.timezone(user_tz)
+                    except Exception:
+                        tz = pytz.timezone("Europe/Moscow")
+                    today = datetime.now(tz).date()
                     current_exp = u["expiration_date"] if u else None
                     if current_exp and current_exp >= today:
                         new_exp = current_exp + timedelta(days=days)

@@ -1,6 +1,6 @@
 # app/bot/handlers/start.py
 from aiogram import Router
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, BotCommand
 from aiogram.fsm.context import FSMContext
 from app.services.user import get_or_create_user, get_user_by_id, set_user_timezone, FREE_TOKENS_COUNT
@@ -49,11 +49,11 @@ WELCOME_TEXT = """Привет, {name}!
 
 # Команды для меню бота (кнопка ☰ слева)
 BOT_COMMANDS = [
-    BotCommand(command="start", description="Перезапустить бота"),
-    BotCommand(command="food", description="Рацион за сегодня"),
-    BotCommand(command="profile", description="Мой профиль"),
-    BotCommand(command="subscribe", description="Подписка"),
-    BotCommand(command="help", description="Помощь"),
+    BotCommand(command="food", description="🍽 Рацион за сегодня"),
+    BotCommand(command="profile", description="👤 Мой профиль"),
+    BotCommand(command="subscribe", description="💎 Подписка"),
+    BotCommand(command="help", description="❓ Помощь"),
+    BotCommand(command="start", description="🔄 Перезапустить"),
 ]
 
 
@@ -148,31 +148,3 @@ async def handle_timezone_selection(callback: CallbackQuery):
         await callback.answer("Ошибка. Попробуйте /start", show_alert=True)
 
 
-@router.message(Command("help"))
-async def cmd_help(message: Message):
-    """Обработчик /help"""
-    help_text = """<b>Как пользоваться</b>
-
-<b>Добавить еду:</b>
-- Отправь фото
-- Или напиши: «борщ 300г», «два яблока»
-- Или голосовое сообщение
-
-<b>Удалить:</b>
-- «убери последнее»
-- «удали борщ»
-
-<b>Изменить:</b>
-- «там было 150г, не 200»
-
-<b>Только посчитать:</b>
-- «сколько калорий в пицце?»
-
-<b>Команды:</b>
-/food — рацион за сегодня
-/profile — профиль
-/subscribe — подписка
-
-💬 Поддержка: @guard_gpt"""
-
-    await message.answer(help_text, parse_mode="HTML")

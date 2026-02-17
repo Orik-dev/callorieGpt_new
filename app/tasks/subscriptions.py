@@ -26,8 +26,8 @@ async def try_all_autopays(ctx):
     try:
         users = await mysql.fetchall(
             """SELECT tg_id, expiration_date, payment_method_id, email,
-                      last_subscription_days, last_subscription_amount, 
-                      failed_autopay_attempts
+                      last_subscription_days, last_subscription_amount,
+                      failed_autopay_attempts, timezone
                FROM users_tbl
                WHERE payment_method_id IS NOT NULL"""
         )
