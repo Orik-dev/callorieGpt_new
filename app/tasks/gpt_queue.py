@@ -17,6 +17,7 @@ from app.services.meals import (
     update_meal,
     delete_meal,
     delete_multiple_meals,
+    user_today,
 )
 from app.db.redis_client import redis
 from app.bot.bot import bot
@@ -54,7 +55,7 @@ def format_meal_line(meal: dict, show_macros: bool = True) -> str:
         p = meal.get('protein', 0)
         f = meal.get('fat', 0)
         c = meal.get('carbs', 0)
-        return f"<b>{name}</b>\n{weight}г · {cal:.1f} ккал · Б{p:.1f} Ж{f:.1f} У{c:.1f}"
+        return f"<b>{name}</b>\n{weight}г · {cal:.1f} ккал\nБелки {p:.1f}г · Жиры {f:.1f}г · Углеводы {c:.1f}г"
     else:
         return f"<b>{name}</b> — {weight}г, {cal:.1f} ккал"
 
@@ -72,7 +73,9 @@ def format_totals(totals: dict, date_str: str = None) -> str:
     return (
         f"<b>{header}:</b>\n"
         f"{cal:.1f} ккал · {count} приёмов\n"
-        f"Б {p:.1f}г · Ж {f:.1f}г · У {c:.1f}г"
+        f"Белки {p:.1f}г\n"
+        f"Жиры {f:.1f}г\n"
+        f"Углеводы {c:.1f}г"
     )
 
 
@@ -109,7 +112,7 @@ def format_calculate_result(items: list) -> str:
     
     lines.append("─" * 20)
     lines.append(f"<b>Всего:</b> {total_cal:.1f} ккал")
-    lines.append(f"Б {total_p:.1f}г · Ж {total_f:.1f}г · У {total_c:.1f}г")
+    lines.append(f"Белки {total_p:.1f}г\nЖиры {total_f:.1f}г\nУглеводы {total_c:.1f}г")
     lines.append("")
     lines.append("<i>Не добавлено в рацион</i>")
     
@@ -513,8 +516,7 @@ async def handle_add(user_id: int, chat_id: int, message_id: int, items: list, u
         added_ids = result.get('added_meal_ids', [])
 
         summary = await get_today_summary(user_id, user_tz)
-        tz = pytz.timezone(user_tz)
-        date_str = datetime.now(tz).strftime("%d.%m")
+        date_str = user_today(user_tz).strftime("%d.%m")
 
         text = format_add_success(items, summary["totals"], date_str)
 

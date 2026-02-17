@@ -12,6 +12,7 @@ from app.services.meals import (
     get_today_summary,
     delete_meal,
     delete_multiple_meals,
+    user_today,
 )
 from app.services.user import get_user_by_id
 from app.db.redis_client import redis
@@ -71,12 +72,11 @@ async def cmd_food(message: Message):
             return
         
         today = history[0]
-        tz = pytz.timezone(user_tz)
-        now = datetime.now(tz)
-        
+        calorie_today = user_today(user_tz)
+
         # Заголовок
-        if today['date'] == now.date():
-            text = f"<b>Сегодня, {format_date_ru(now)}</b>\n\n"
+        if today['date'] == calorie_today:
+            text = f"<b>Сегодня, {format_date_ru(calorie_today)}</b>\n\n"
         else:
             text = f"<b>{format_date_ru(today['date'])}</b>\n\n"
         
@@ -91,16 +91,17 @@ async def cmd_food(message: Message):
                 c = float(meal['carbs'])
                 
                 text += f"<b>{time}</b>  {name}\n"
-                text += f"        {cal:.1f} ккал · Б{p:.1f} Ж{f:.1f} У{c:.1f}\n\n"
+                text += f"        {cal:.1f} ккал\n"
+                text += f"        Белки {p:.1f}г · Жиры {f:.1f}г · Углеводы {c:.1f}г\n\n"
         else:
             text += "<i>Нет приёмов пищи</i>\n\n"
         
         # Итого
         text += "─" * 24 + "\n"
         text += f"<b>Итого:</b> {float(today['total_calories']):.1f} ккал\n"
-        text += f"Б {float(today['total_protein']):.1f}г · "
-        text += f"Ж {float(today['total_fat']):.1f}г · "
-        text += f"У {float(today['total_carbs']):.1f}г"
+        text += f"Белки {float(today['total_protein']):.1f}г\n"
+        text += f"Жиры {float(today['total_fat']):.1f}г\n"
+        text += f"Углеводы {float(today['total_carbs']):.1f}г"
 
         # Кнопки
         buttons = []
@@ -156,10 +157,9 @@ async def callback_show_today(callback: CallbackQuery):
         totals = summary["totals"]
         meals = summary["meals"]
         
-        tz = pytz.timezone(user_tz)
-        now = datetime.now(tz)
-        
-        text = f"<b>Сегодня, {format_date_ru(now)}</b>\n\n"
+        calorie_today = user_today(user_tz)
+
+        text = f"<b>Сегодня, {format_date_ru(calorie_today)}</b>\n\n"
         
         if meals:
             for meal in meals:
@@ -223,9 +223,9 @@ async def handle_show_day(callback: CallbackQuery):
 
         text += "\n" + "─" * 24 + "\n"
         text += f"<b>Итого:</b> {float(day_data['total_calories']):.1f} ккал\n"
-        text += f"Б {float(day_data['total_protein']):.1f}г · "
-        text += f"Ж {float(day_data['total_fat']):.1f}г · "
-        text += f"У {float(day_data['total_carbs']):.1f}г"
+        text += f"Белки {float(day_data['total_protein']):.1f}г\n"
+        text += f"Жиры {float(day_data['total_fat']):.1f}г\n"
+        text += f"Углеводы {float(day_data['total_carbs']):.1f}г"
         
         await callback.message.answer(text, parse_mode="HTML")
         
@@ -352,8 +352,7 @@ async def handle_add_calculated(callback: CallbackQuery):
         summary = await get_today_summary(user_id, user_tz)
         totals = summary["totals"]
         
-        tz = pytz.timezone(user_tz)
-        date_str = format_date_ru(datetime.now(tz))
+        date_str = format_date_ru(user_today(user_tz))
         
         lines = ["<b>✓ Добавлено</b>\n"]
         for meal in items:
@@ -363,12 +362,12 @@ async def handle_add_calculated(callback: CallbackQuery):
             p = float(meal.get('protein', 0))
             f = float(meal.get('fat', 0))
             c = float(meal.get('carbs', 0))
-            lines.append(f"<b>{name}</b>\n{weight}г · {cal:.1f} ккал · Б{p:.1f} Ж{f:.1f} У{c:.1f}")
+            lines.append(f"<b>{name}</b>\n{weight}г · {cal:.1f} ккал\nБелки {p:.1f}г · Жиры {f:.1f}г · Углеводы {c:.1f}г")
         
         lines.append("")
         lines.append("─" * 20)
         lines.append(f"<b>Итого за {date_str}:</b> {float(totals['total_calories']):.1f} ккал")
-        lines.append(f"Б {float(totals['total_protein']):.1f}г · Ж {float(totals['total_fat']):.1f}г · У {float(totals['total_carbs']):.1f}г")
+        lines.append(f"Белки {float(totals['total_protein']):.1f}г\nЖиры {float(totals['total_fat']):.1f}г\nУглеводы {float(totals['total_carbs']):.1f}г")
         
         buttons = []
         if added_ids:

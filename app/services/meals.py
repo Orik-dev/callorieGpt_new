@@ -9,6 +9,17 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+DAY_START_HOUR = 3  # День начинается в 3:00 ночи (еда до 3:00 = предыдущий день)
+
+
+def user_today(tz) -> "date":
+    """Текущий 'калорийный день' с учётом сдвига на DAY_START_HOUR.
+    Между полуночью и 3:00 возвращает вчерашнюю дату."""
+    if isinstance(tz, str):
+        tz = pytz.timezone(tz)
+    return (datetime.now(tz) - timedelta(hours=DAY_START_HOUR)).date()
+
+
 MONTHS_RU = {
     1: "января", 2: "февраля", 3: "марта", 4: "апреля",
     5: "мая", 6: "июня", 7: "июля", 8: "августа",
@@ -44,7 +55,7 @@ async def save_meals(
     try:
         tz = pytz.timezone(user_tz)
         now = datetime.now(tz)
-        today = now.date()
+        today = user_today(tz)
 
         # Если указано время приёма — используем его
         if meal_time:
@@ -149,7 +160,7 @@ async def get_today_summary(user_id: int, user_tz: str = "Europe/Moscow") -> Dic
     """
     try:
         tz = pytz.timezone(user_tz)
-        today = datetime.now(tz).date()
+        today = user_today(tz)
         
         # Получаем итоги
         totals = await mysql.fetchone(
@@ -203,7 +214,7 @@ async def get_week_summary(user_id: int, user_tz: str = "Europe/Moscow") -> List
     """
     try:
         tz = pytz.timezone(user_tz)
-        today = datetime.now(tz).date()
+        today = user_today(tz)
         
         week_ago = today - timedelta(days=6)
         
@@ -327,7 +338,7 @@ async def get_nutrition_stats(user_id: int, days: int = 7) -> Dict:
         user = await get_user_by_id(user_id)
         tz = pytz.timezone(user.get("timezone", "Europe/Moscow"))
         
-        today = datetime.now(tz).date()
+        today = user_today(tz)
         start_date = today - timedelta(days=days - 1)
         
         # Получаем данные за период
@@ -460,7 +471,7 @@ async def get_food_history(user_id: int, user_tz: str = "Europe/Moscow", days: i
     """
     try:
         tz = pytz.timezone(user_tz)
-        today = datetime.now(tz).date()
+        today = user_today(tz)
         start_date = today - timedelta(days=days - 1)
         
         # Получаем дневные итоги
@@ -541,7 +552,7 @@ async def get_day_details(user_id: int, user_tz: str, day_index: int) -> Dict:
     """
     try:
         tz = pytz.timezone(user_tz)
-        today = datetime.now(tz).date()
+        today = user_today(tz)
         target_date = today - timedelta(days=day_index)
         
         # Получаем итоги дня
@@ -602,7 +613,7 @@ async def get_week_stats(user_id: int, user_tz: str = "Europe/Moscow") -> Dict:
     """
     try:
         tz = pytz.timezone(user_tz)
-        today = datetime.now(tz).date()
+        today = user_today(tz)
         start_date = today - timedelta(days=6)
         
         # Получаем данные за неделю
@@ -678,7 +689,7 @@ async def get_day_meals(user_id: int, date_str: str, user_tz: str = "Europe/Mosc
         
         # Форматируем дату
         tz = pytz.timezone(user_tz)
-        today = datetime.now(tz).date()
+        today = user_today(tz)
         weekdays = ["ПН", "ВТ", "СР", "ЧТ", "ПТ", "СБ", "ВС"]
         
         if target_date == today:
@@ -719,7 +730,7 @@ async def get_today_meals(user_id: int, user_tz: str = "Europe/Moscow", limit: i
     """
     try:
         tz = pytz.timezone(user_tz)
-        today = datetime.now(tz).date()
+        today = user_today(tz)
         
         if limit:
             query = """SELECT * FROM meals_history
@@ -770,7 +781,7 @@ async def get_last_meal(user_id: int, user_tz: str = "Europe/Moscow"):
     """
     try:
         tz = pytz.timezone(user_tz)
-        today = datetime.now(tz).date()
+        today = user_today(tz)
         
         meal = await mysql.fetchone(
             """SELECT * FROM meals_history
