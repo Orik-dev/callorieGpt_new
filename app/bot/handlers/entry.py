@@ -5,12 +5,11 @@
 """
 from aiogram import Router, F
 from aiogram.types import Message
-from app.services.user import get_or_create_user
+from app.services.user import get_or_create_user, refund_token
 from app.utils.audio import ogg_to_text
 from app.utils.telegram_helpers import escape_html
 from app.db.mysql import mysql
 import logging
-import asyncio
 import base64
 from io import BytesIO
 
@@ -37,19 +36,6 @@ async def deduct_token_atomic(user_id: int) -> bool:
                 (user_id,)
             )
             return cur.rowcount > 0
-
-
-async def refund_token(user_id: int):
-    """Возвращает токен при ошибке"""
-    async with mysql.pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                """UPDATE users_tbl 
-                   SET free_tokens = free_tokens + 1 
-                   WHERE tg_id = %s""",
-                (user_id,)
-            )
-            logger.info(f"Token refunded for user {user_id}")
 
 
 @router.message(F.text)

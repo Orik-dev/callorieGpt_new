@@ -105,9 +105,9 @@ async def cmd_food(message: Message):
         # Кнопки
         buttons = []
 
-        # Кнопки удаления для КАЖДОГО приёма (макс 10)
+        # Кнопки удаления для КАЖДОГО приёма (макс 20)
         if today['meals']:
-            for meal in today['meals'][-10:]:
+            for meal in today['meals'][-20:]:
                 time = meal["meal_datetime"].strftime("%H:%M")
                 name = meal['food_name'][:20]
                 buttons.append([

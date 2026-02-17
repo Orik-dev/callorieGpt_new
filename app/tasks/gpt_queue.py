@@ -8,7 +8,7 @@ import json
 import hashlib
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from app.api.gpt import ai_request
-from app.services.user import get_user_by_id
+from app.services.user import get_user_by_id, refund_token
 from app.services.meals import (
     save_meals,
     get_today_summary,
@@ -18,7 +18,6 @@ from app.services.meals import (
     delete_meal,
     delete_multiple_meals,
 )
-from app.db.mysql import mysql
 from app.db.redis_client import redis
 from app.bot.bot import bot
 from app.utils.telegram_helpers import safe_send_message, safe_delete_message, escape_html
@@ -224,20 +223,6 @@ def check_all_zeros(items: list) -> bool:
 # HELPERS
 # ============================================
 
-async def refund_token(user_id: int):
-    """Возвращает токен"""
-    try:
-        async with mysql.pool.acquire() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    "UPDATE users_tbl SET free_tokens = free_tokens + 1 WHERE tg_id = %s",
-                    (user_id,)
-                )
-        logger.info(f"[GPT] Token refunded: user {user_id}")
-    except Exception as e:
-        logger.error(f"[GPT] Failed to refund: {e}")
-
-
 async def get_meals_context(user_id: int, user_tz: str) -> str:
     """Контекст для GPT"""
     try:
@@ -364,13 +349,14 @@ async def process_universal_request(
         raw_items = data.get("items", [])
         items = validate_items(raw_items)
         notes = data.get("notes", "")
-        
-        logger.info(f"[GPT] User {user_id}: intent={intent}, items={len(items)}")
-        
+        meal_time = data.get("meal_time")  # "HH:MM" или None
+
+        logger.info(f"[GPT] User {user_id}: intent={intent}, items={len(items)}, meal_time={meal_time}")
+
         # ✅ ИСПРАВЛЕНИЕ: Проверка на нулевые значения ДО валидации
         if raw_items and check_all_zeros(raw_items):
             logger.warning(f"[GPT] All zeros in response for user {user_id}, GPT failed to calculate")
-        
+
         # Роутинг
         if intent == "unknown":
             await handle_unknown(user_id, chat_id, message_id, notes)
@@ -388,7 +374,7 @@ async def process_universal_request(
                 await safe_send_message(bot, chat_id, notes or "Не распознал еду. Опишите подробнее.")
                 await refund_token(user_id)
                 return
-            await handle_add(user_id, chat_id, message_id, items, user_tz, image_url)
+            await handle_add(user_id, chat_id, message_id, items, user_tz, image_url, meal_time)
         
     except Exception as e:
         logger.exception(f"[GPT] Error: {e}")
@@ -411,10 +397,10 @@ async def handle_unknown(user_id: int, chat_id: int, message_id: int, notes: str
     await refund_token(user_id)
 
 
-async def handle_add(user_id: int, chat_id: int, message_id: int, items: list, user_tz: str, image_url: str = None):
+async def handle_add(user_id: int, chat_id: int, message_id: int, items: list, user_tz: str, image_url: str = None, meal_time: str = None):
     """Добавление"""
     try:
-        result = await save_meals(user_id, {"items": items, "notes": ""}, user_tz, image_url)
+        result = await save_meals(user_id, {"items": items, "notes": ""}, user_tz, image_url, meal_time=meal_time)
         added_ids = result.get('added_meal_ids', [])
 
         summary = await get_today_summary(user_id, user_tz)
@@ -423,10 +409,18 @@ async def handle_add(user_id: int, chat_id: int, message_id: int, items: list, u
 
         text = format_add_success(items, summary["totals"], date_str)
 
+        # Прогресс калорий за день
+        cal = float(summary["totals"].get('total_calories', 0))
+        goal = 2000
+        pct = min(cal / goal * 100, 100) if goal > 0 else 0
+        filled = int(pct / 10)
+        bar = "▓" * filled + "░" * (10 - filled)
+        text += f"\n\n{bar} {pct:.0f}% от ~{goal} ккал"
+
         # Показываем остаток запросов
         user = await get_user_by_id(user_id)
         remaining = user.get('free_tokens', 0) if user else 0
-        text += f"\n\n💬 Осталось запросов: {remaining}"
+        text += f"\n💬 Осталось запросов: {remaining}"
 
         buttons = []
         if added_ids:

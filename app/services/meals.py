@@ -25,17 +25,19 @@ async def save_meals(
     user_id: int,
     parsed_data: Dict,
     user_tz: str = "Europe/Moscow",
-    image_file_id: Optional[str] = None
+    image_file_id: Optional[str] = None,
+    meal_time: Optional[str] = None
 ) -> Dict:
     """
     Сохраняет прием пищи в БД и обновляет дневные итоги
-    
+
     Args:
         user_id: Telegram ID пользователя
         parsed_data: Распарсенные данные от GPT
         user_tz: Часовой пояс пользователя
         image_file_id: ID фото в Telegram (если было)
-        
+        meal_time: Время приёма "HH:MM" (если указано пользователем)
+
     Returns:
         Dict с обновленными итогами дня и ID добавленных блюд
     """
@@ -43,6 +45,15 @@ async def save_meals(
         tz = pytz.timezone(user_tz)
         now = datetime.now(tz)
         today = now.date()
+
+        # Если указано время приёма — используем его
+        if meal_time:
+            try:
+                h, m = map(int, meal_time.split(":"))
+                if 0 <= h <= 23 and 0 <= m <= 59:
+                    now = now.replace(hour=h, minute=m, second=0, microsecond=0)
+            except (ValueError, AttributeError):
+                pass  # Используем текущее время
         
         added_meal_ids = []  # ✅ Список ID добавленных блюд
         

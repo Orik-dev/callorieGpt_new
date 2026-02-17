@@ -235,6 +235,20 @@ async def update_tokens_daily():
         logger.error(f"❌ Error in daily token reset: {e}", exc_info=True)
         raise
 
+async def refund_token(user_id: int):
+    """Возвращает токен при ошибке"""
+    try:
+        async with mysql.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE users_tbl SET free_tokens = free_tokens + 1 WHERE tg_id = %s",
+                    (user_id,)
+                )
+        logger.info(f"[User] Token refunded: user {user_id}")
+    except Exception as e:
+        logger.error(f"[User] Failed to refund token: {e}")
+
+
 async def set_user_email(user_id: int, email: str) -> None:
     """
     Установить email пользователя
