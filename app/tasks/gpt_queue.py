@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # ============================================
 # КОНСТАНТЫ
 # ============================================
-UNDO_KEY_TTL = 300        # 5 минут на отмену
+UNDO_KEY_TTL = 1800       # 30 минут на отмену
 CALC_DATA_TTL = 600       # 10 минут для данных расчёта
 MAX_FOOD_NAME_LEN = 100   # Макс длина названия
 MAX_WEIGHT_GRAMS = 3000   # Макс вес порции
@@ -290,7 +290,7 @@ async def is_duplicate_request(user_id: int, text_hash: str) -> bool:
     key = f"req:{user_id}:{text_hash}"
     if await redis.exists(key):
         return True
-    await redis.setex(key, 120, "1")
+    await redis.setex(key, 15, "1")
     return False
 
 
@@ -310,16 +310,20 @@ async def process_universal_request(
     logger.info(f"[GPT] User {user_id}: {text[:50]}...")
     
     try:
-        # Антидубликат
+        # Антидубликат (15 сек окно — защита от двойного нажатия)
         text_hash = hashlib.md5((text + str(image_url)).encode()).hexdigest()[:8]
         if await is_duplicate_request(user_id, text_hash):
             logger.info(f"[GPT] Duplicate from {user_id}")
             await safe_delete_message(bot, chat_id, message_id)
+            await safe_send_message(bot, chat_id, "⏳ Это сообщение уже обрабатывается.")
+            await refund_token(user_id)
             return
-        
+
         user = await get_user_by_id(user_id)
         if not user:
             await safe_delete_message(bot, chat_id, message_id)
+            await safe_send_message(bot, chat_id, "Пользователь не найден. Нажмите /start")
+            await refund_token(user_id)
             return
         
         user_tz = user.get('timezone', 'Europe/Moscow')
@@ -412,20 +416,25 @@ async def handle_add(user_id: int, chat_id: int, message_id: int, items: list, u
     try:
         result = await save_meals(user_id, {"items": items, "notes": ""}, user_tz, image_url)
         added_ids = result.get('added_meal_ids', [])
-        
+
         summary = await get_today_summary(user_id, user_tz)
         tz = pytz.timezone(user_tz)
         date_str = datetime.now(tz).strftime("%d.%m")
-        
+
         text = format_add_success(items, summary["totals"], date_str)
-        
+
+        # Показываем остаток запросов
+        user = await get_user_by_id(user_id)
+        remaining = user.get('free_tokens', 0) if user else 0
+        text += f"\n\n💬 Осталось запросов: {remaining}"
+
         buttons = []
         if added_ids:
             undo_key = await save_undo_data(added_ids, user_id)
             buttons.append([InlineKeyboardButton(text="Отменить", callback_data=undo_key)])
-        
+
         keyboard = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
-        
+
         await safe_delete_message(bot, chat_id, message_id)
         await safe_send_message(bot, chat_id, text, keyboard)
         
@@ -481,16 +490,31 @@ async def handle_delete(user_id: int, chat_id: int, message_id: int, data: dict,
         if target == "all":
             summary = await get_today_summary(user_id, user_tz)
             meals = summary.get("meals", [])
-            
+
             if not meals:
                 await safe_delete_message(bot, chat_id, message_id)
                 await safe_send_message(bot, chat_id, "Сегодня нечего удалять.")
                 await refund_token(user_id)
                 return
-            
-            deleted = await delete_multiple_meals([m['id'] for m in meals], user_id)
+
+            # Подтверждение перед удалением всего
+            meal_ids = [m['id'] for m in meals]
+            confirm_key = f"delall:{user_id}:{uuid.uuid4().hex[:8]}"
+            await redis.setex(confirm_key, 300, json.dumps(meal_ids))
+
+            cal = float(summary["totals"]["total_calories"])
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Да, удалить всё", callback_data=confirm_key)],
+                [InlineKeyboardButton(text="Отмена", callback_data="canceldelall")],
+            ])
+
             await safe_delete_message(bot, chat_id, message_id)
-            await safe_send_message(bot, chat_id, f"Удалено: {deleted}\nРацион очищен.")
+            await safe_send_message(
+                bot, chat_id,
+                f"⚠️ <b>Удалить все записи за сегодня?</b>\n\n"
+                f"Записей: {len(meals)}, всего: {cal:.1f} ккал",
+                keyboard
+            )
             return
         
         if target == "last":
@@ -551,31 +575,44 @@ async def handle_delete(user_id: int, chat_id: int, message_id: int, data: dict,
 
 
 async def handle_edit(user_id: int, chat_id: int, message_id: int, data: dict, user_tz: str):
-    """Редактирование"""
+    """Редактирование (по имени или последнее)"""
     try:
-        last = await get_last_meal(user_id, user_tz)
-        
-        if not last:
+        edit_target = data.get("edit_target", "last")
+        meal = None
+
+        if edit_target and edit_target != "last":
+            # Поиск по названию
+            summary = await get_today_summary(user_id, user_tz)
+            meals = summary.get("meals", [])
+            for m in reversed(meals):
+                if edit_target.lower() in m['food_name'].lower():
+                    meal = m
+                    break
+
+        if not meal:
+            meal = await get_last_meal(user_id, user_tz)
+
+        if not meal:
             await safe_delete_message(bot, chat_id, message_id)
             await safe_send_message(bot, chat_id, "Нет записей для редактирования.")
             await refund_token(user_id)
             return
-        
+
         items = validate_items(data.get("items", []))
-        
+
         if items:
             new = items[0]
             await update_meal(
-                meal_id=last['id'],
+                meal_id=meal['id'],
                 user_id=user_id,
-                food_name=new.get('name', last['food_name']),
-                weight_grams=new.get('weight_grams', last['weight_grams']),
-                calories=new.get('calories', last['calories']),
-                protein=new.get('protein', last['protein']),
-                fat=new.get('fat', last['fat']),
-                carbs=new.get('carbs', last['carbs'])
+                food_name=new.get('name', meal['food_name']),
+                weight_grams=new.get('weight_grams', meal['weight_grams']),
+                calories=new.get('calories', meal['calories']),
+                protein=new.get('protein', meal['protein']),
+                fat=new.get('fat', meal['fat']),
+                carbs=new.get('carbs', meal['carbs'])
             )
-            
+
             summary = await get_today_summary(user_id, user_tz)
             text = format_edit_success(new, summary["totals"])
             await safe_delete_message(bot, chat_id, message_id)
@@ -584,10 +621,10 @@ async def handle_edit(user_id: int, chat_id: int, message_id: int, data: dict, u
             await safe_delete_message(bot, chat_id, message_id)
             await safe_send_message(
                 bot, chat_id,
-                "Не понял что изменить.\n\nПримеры:\n• «там было 150г»\n• «добавь масло»"
+                "Не понял что изменить.\n\nПримеры:\n• «там было 150г»\n• «исправь гречку — было 200г»"
             )
             await refund_token(user_id)
-            
+
     except Exception as e:
         logger.exception(f"[GPT] Edit error: {e}")
         await safe_delete_message(bot, chat_id, message_id)

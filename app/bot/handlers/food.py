@@ -23,7 +23,7 @@ import json
 logger = logging.getLogger(__name__)
 router = Router()
 
-UNDO_KEY_TTL = 300  # 5 минут
+UNDO_KEY_TTL = 1800  # 30 минут
 
 
 async def safe_callback_answer(callback: CallbackQuery, text: str = None, show_alert: bool = False):
@@ -384,4 +384,57 @@ async def handle_add_calculated(callback: CallbackQuery):
 
     except Exception as e:
         logger.exception(f"[Food] Add calculated error: {e}")
+        await safe_callback_answer(callback, "Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("delall:"))
+async def handle_confirm_delete_all(callback: CallbackQuery):
+    """Подтверждение удаления всех записей за день"""
+    try:
+        user_id = callback.from_user.id
+        confirm_key = callback.data
+
+        if f":{user_id}:" not in confirm_key:
+            await safe_callback_answer(callback, "Не ваша кнопка", show_alert=True)
+            return
+
+        data = await redis.get(confirm_key)
+
+        if not data:
+            await safe_callback_answer(callback, "Время истекло", show_alert=True)
+            try:
+                await callback.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            return
+
+        meal_ids = json.loads(data)
+        await redis.delete(confirm_key)
+
+        deleted = await delete_multiple_meals(meal_ids, user_id)
+
+        text = f"<b>✓ Удалено записей: {deleted}</b>\nРацион за сегодня очищен."
+        try:
+            await callback.message.edit_text(text, reply_markup=None, parse_mode="HTML")
+        except TelegramBadRequest:
+            pass
+        await safe_callback_answer(callback, "Удалено")
+
+    except Exception as e:
+        logger.exception(f"[Food] Delete all error: {e}")
+        await safe_callback_answer(callback, "Ошибка", show_alert=True)
+
+
+@router.callback_query(F.data == "canceldelall")
+async def handle_cancel_delete_all(callback: CallbackQuery):
+    """Отмена удаления всех записей"""
+    try:
+        await callback.message.edit_text(
+            "<b>Отменено</b>\nЗаписи не удалены.",
+            reply_markup=None,
+            parse_mode="HTML"
+        )
+        await safe_callback_answer(callback, "Отменено")
+    except Exception as e:
+        logger.exception(f"[Food] Cancel delete all error: {e}")
         await safe_callback_answer(callback, "Ошибка", show_alert=True)

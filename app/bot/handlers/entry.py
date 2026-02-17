@@ -59,7 +59,12 @@ async def on_text(message: Message, **data):
     GPT сам определит intent (add/calculate/edit/delete).
     """
     user_id = message.from_user.id
-    text = message.text.strip()[:500]
+    raw_text = message.text.strip()
+    if len(raw_text) > 500:
+        text = raw_text[:500]
+        await message.answer("⚠️ Сообщение слишком длинное, обработаю первые 500 символов.")
+    else:
+        text = raw_text
 
     # Игнорируем команды
     if text.startswith('/'):

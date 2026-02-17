@@ -69,12 +69,32 @@ async def setup_bot_commands():
 def get_timezone_keyboard() -> InlineKeyboardMarkup:
     """Клавиатура выбора часового пояса"""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🇷🇺 Москва (UTC+3)", callback_data="tz:Europe/Moscow")],
-        [InlineKeyboardButton(text="🇷🇺 Калининград (UTC+2)", callback_data="tz:Europe/Kaliningrad")],
-        [InlineKeyboardButton(text="🇷🇺 Екатеринбург (UTC+5)", callback_data="tz:Asia/Yekaterinburg")],
-        [InlineKeyboardButton(text="🇷🇺 Новосибирск (UTC+7)", callback_data="tz:Asia/Novosibirsk")],
-        [InlineKeyboardButton(text="🇷🇺 Владивосток (UTC+10)", callback_data="tz:Asia/Vladivostok")],
-        [InlineKeyboardButton(text="Пропустить", callback_data="tz:skip")]
+        [
+            InlineKeyboardButton(text="Москва UTC+3", callback_data="tz:Europe/Moscow"),
+            InlineKeyboardButton(text="Минск UTC+3", callback_data="tz:Europe/Minsk"),
+        ],
+        [
+            InlineKeyboardButton(text="Калининград UTC+2", callback_data="tz:Europe/Kaliningrad"),
+            InlineKeyboardButton(text="Киев UTC+2", callback_data="tz:Europe/Kiev"),
+        ],
+        [
+            InlineKeyboardButton(text="Самара UTC+4", callback_data="tz:Europe/Samara"),
+            InlineKeyboardButton(text="Баку UTC+4", callback_data="tz:Asia/Baku"),
+        ],
+        [
+            InlineKeyboardButton(text="Екатеринбург UTC+5", callback_data="tz:Asia/Yekaterinburg"),
+            InlineKeyboardButton(text="Ташкент UTC+5", callback_data="tz:Asia/Tashkent"),
+        ],
+        [
+            InlineKeyboardButton(text="Омск UTC+6", callback_data="tz:Asia/Omsk"),
+            InlineKeyboardButton(text="Алматы UTC+6", callback_data="tz:Asia/Almaty"),
+        ],
+        [InlineKeyboardButton(text="Красноярск UTC+7", callback_data="tz:Asia/Krasnoyarsk")],
+        [InlineKeyboardButton(text="Иркутск UTC+8", callback_data="tz:Asia/Irkutsk")],
+        [InlineKeyboardButton(text="Якутск UTC+9", callback_data="tz:Asia/Yakutsk")],
+        [InlineKeyboardButton(text="Владивосток UTC+10", callback_data="tz:Asia/Vladivostok")],
+        [InlineKeyboardButton(text="Камчатка UTC+12", callback_data="tz:Asia/Kamchatka")],
+        [InlineKeyboardButton(text="Пропустить", callback_data="tz:skip")],
     ])
 
 

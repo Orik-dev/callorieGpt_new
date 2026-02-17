@@ -9,6 +9,17 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+MONTHS_RU = {
+    1: "января", 2: "февраля", 3: "марта", 4: "апреля",
+    5: "мая", 6: "июня", 7: "июля", 8: "августа",
+    9: "сентября", 10: "октября", 11: "ноября", 12: "декабря"
+}
+
+
+def _format_day_month(d) -> str:
+    """Форматирует дату как '17 февраля'"""
+    return f"{d.day} {MONTHS_RU[d.month]}"
+
 
 async def save_meals(
     user_id: int,
@@ -468,12 +479,12 @@ async def get_food_history(user_id: int, user_tz: str = "Europe/Moscow", days: i
             
             # Форматирование даты
             if date_obj == today:
-                date_formatted = f"Сегодня, {date_obj.strftime('%d %B')}"
+                date_formatted = f"Сегодня, {_format_day_month(date_obj)}"
             elif date_obj == today - timedelta(days=1):
-                date_formatted = f"Вчера, {date_obj.strftime('%d %B')}"
+                date_formatted = f"Вчера, {_format_day_month(date_obj)}"
             else:
                 weekday = weekdays[date_obj.weekday()]
-                date_formatted = f"{date_obj.strftime('%d %B')}, {weekday}"
+                date_formatted = f"{_format_day_month(date_obj)}, {weekday}"
             
             day_dict = {
                 "date": date_obj,
@@ -543,10 +554,10 @@ async def get_day_details(user_id: int, user_tz: str, day_index: int) -> Dict:
         weekdays = ["ПН", "ВТ", "СР", "ЧТ", "ПТ", "СБ", "ВС"]
         
         if target_date == today - timedelta(days=1):
-            date_formatted = f"Вчера, {target_date.strftime('%d %B')}"
+            date_formatted = f"Вчера, {_format_day_month(target_date)}"
         else:
             weekday = weekdays[target_date.weekday()]
-            date_formatted = f"{target_date.strftime('%d %B')}, {weekday}"
+            date_formatted = f"{_format_day_month(target_date)}, {weekday}"
         
         return {
             "date": target_date,
@@ -660,12 +671,12 @@ async def get_day_meals(user_id: int, date_str: str, user_tz: str = "Europe/Mosc
         weekdays = ["ПН", "ВТ", "СР", "ЧТ", "ПТ", "СБ", "ВС"]
         
         if target_date == today:
-            date_formatted = f"Сегодня, {target_date.strftime('%d %B')}"
+            date_formatted = f"Сегодня, {_format_day_month(target_date)}"
         elif target_date == today - timedelta(days=1):
-            date_formatted = f"Вчера, {target_date.strftime('%d %B')}"
+            date_formatted = f"Вчера, {_format_day_month(target_date)}"
         else:
             weekday = weekdays[target_date.weekday()]
-            date_formatted = f"{target_date.strftime('%d %B')}, {weekday}"
+            date_formatted = f"{_format_day_month(target_date)}, {weekday}"
         
         return {
             "date": target_date,

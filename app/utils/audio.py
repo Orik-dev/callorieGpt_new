@@ -17,7 +17,7 @@ async def ogg_to_text(ogg_path: str) -> str:
     try:
         with open(ogg_path, "rb") as f:
             files = {"file": (os.path.basename(ogg_path), f, "audio/ogg")}
-            data = {"model": WHISPER_MODEL, "language": "ru"}
+            data = {"model": WHISPER_MODEL}
 
             async with httpx.AsyncClient(timeout=30) as client:
                 response = await client.post(
