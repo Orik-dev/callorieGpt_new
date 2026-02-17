@@ -108,7 +108,7 @@ async def on_voice(message: Message, **data):
         
         await message.bot.download_file(file.file_path, destination=file_path)
         
-        text = await asyncio.to_thread(ogg_to_text, file_path)
+        text = await ogg_to_text(file_path)
         
         if not text:
             await status_msg.edit_text(
