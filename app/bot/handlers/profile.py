@@ -50,19 +50,44 @@ async def handle_profile(message: types.Message):
         calorie_goal = user.get("calorie_goal")
         goal_display = calorie_goal or settings.default_calorie_goal
 
+        fitness_goal = user.get("fitness_goal")
+        fitness_labels = {
+            "lose": "Похудеть",
+            "gain": "Набрать массу",
+            "maintain": "Поддержание",
+        }
+
         profile_text = (
-            f"👤 <b>Ваш профиль</b>\n\n"
-            f"📅 <b>Подписка до:</b> {exp_date_str}\n"
-            f"🪙 <b>Запросов осталось сегодня:</b> {tokens_display}\n"
-            f"🔁 <b>Автопродление:</b> {'включено ✅' if autopay_active else 'отключено ❌'}\n"
-            f"🎯 <b>Цель:</b> {goal_display} ккал/день"
-            f"{'' if calorie_goal else ' <i>(стандартная)</i>'}\n"
+            f"<b>Ваш профиль</b>\n\n"
+            f"Подписка до: {exp_date_str}\n"
+            f"Запросов осталось: {tokens_display}\n"
+            f"Автопродление: {'включено' if autopay_active else 'отключено'}\n"
         )
 
-        if is_active:
-            profile_text += f"\n✨ <b>Подписка активна</b>"
+        # Цель и нормы КБЖУ
+        if fitness_goal and calorie_goal:
+            p_goal = user.get("protein_goal")
+            f_goal = user.get("fat_goal")
+            c_goal = user.get("carbs_goal")
+            profile_text += (
+                f"\n<b>Цель: {fitness_labels.get(fitness_goal, fitness_goal)}</b>\n"
+                f"Калории: {goal_display} ккал/день\n"
+            )
+            if p_goal and f_goal and c_goal:
+                profile_text += (
+                    f"Белки: {p_goal}г\n"
+                    f"Жиры: {f_goal}г\n"
+                    f"Углеводы: {c_goal}г\n"
+                )
+        elif calorie_goal:
+            profile_text += f"\nЦель: {goal_display} ккал/день\n"
         else:
-            profile_text += f"\n💎 Оформите подписку: /subscribe"
+            profile_text += f"\nЦель: {goal_display} ккал/день <i>(стандартная)</i>\n"
+
+        if is_active:
+            profile_text += "\nПодписка активна"
+        else:
+            profile_text += "\nОформите подписку: /subscribe"
 
         # СТАТИСТИКА ЗА НЕДЕЛЮ
         user_tz = user.get("timezone", "Europe/Moscow")
@@ -100,12 +125,12 @@ async def handle_profile(message: types.Message):
 
         if not calorie_goal:
             buttons.append([InlineKeyboardButton(
-                text="🎯 Настроить цель калорий",
+                text="Настроить цель",
                 callback_data="profile_setup:start"
             )])
         else:
             buttons.append([InlineKeyboardButton(
-                text="🎯 Изменить цель калорий",
+                text="Изменить цель",
                 callback_data="profile_setup:start"
             )])
 

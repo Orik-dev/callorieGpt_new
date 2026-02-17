@@ -325,10 +325,11 @@ def calculate_bmr_tdee(
     height_cm: int,
     birth_year: int,
     activity_level: str,
+    fitness_goal: str = "maintain",
 ) -> tuple:
     """
-    Формула Миффлина-Сан Жеора.
-    Returns (bmr, tdee, recommended_goal).
+    Формула Миффлина-Сан Жеора + расчёт макросов по цели.
+    Returns (bmr, tdee, calorie_goal, protein_goal, fat_goal, carbs_goal).
     """
     age = datetime.now().year - birth_year
 
@@ -339,9 +340,26 @@ def calculate_bmr_tdee(
 
     multiplier = ACTIVITY_MULTIPLIERS.get(activity_level, 1.55)
     tdee = bmr * multiplier
-    recommended_goal = round(tdee / 50) * 50
 
-    return bmr, tdee, recommended_goal
+    # Калории по цели
+    if fitness_goal == "lose":
+        calorie_goal = round((tdee - 400) / 50) * 50
+        protein_g = round(weight_kg * 2.0)
+        fat_pct = 0.25
+    elif fitness_goal == "gain":
+        calorie_goal = round((tdee + 300) / 50) * 50
+        protein_g = round(weight_kg * 2.0)
+        fat_pct = 0.25
+    else:  # maintain
+        calorie_goal = round(tdee / 50) * 50
+        protein_g = round(weight_kg * 1.6)
+        fat_pct = 0.30
+
+    fat_g = round(calorie_goal * fat_pct / 9)
+    carbs_g = round((calorie_goal - protein_g * 4 - fat_g * 9) / 4)
+    carbs_g = max(carbs_g, 50)  # минимум 50г углеводов
+
+    return bmr, tdee, calorie_goal, protein_g, fat_g, carbs_g
 
 
 async def save_user_profile(
@@ -352,6 +370,10 @@ async def save_user_profile(
     birth_year: int,
     activity_level: str,
     calorie_goal: int,
+    fitness_goal: str = None,
+    protein_goal: int = None,
+    fat_goal: int = None,
+    carbs_goal: int = None,
 ) -> None:
     """Сохраняет профиль пользователя"""
     try:
@@ -360,12 +382,19 @@ async def save_user_profile(
                 await cur.execute(
                     """UPDATE users_tbl
                        SET gender=%s, height_cm=%s, weight_kg=%s,
-                           birth_year=%s, activity_level=%s, calorie_goal=%s
+                           birth_year=%s, activity_level=%s, calorie_goal=%s,
+                           fitness_goal=%s, protein_goal=%s, fat_goal=%s, carbs_goal=%s
                        WHERE tg_id=%s""",
                     (gender, height_cm, weight_kg, birth_year,
-                     activity_level, calorie_goal, user_id)
+                     activity_level, calorie_goal,
+                     fitness_goal, protein_goal, fat_goal, carbs_goal,
+                     user_id)
                 )
-        logger.info(f"[User] Profile saved for {user_id}: goal={calorie_goal}")
+        logger.info(
+            f"[User] Profile saved for {user_id}: "
+            f"goal={calorie_goal}, fitness={fitness_goal}, "
+            f"P={protein_goal}g F={fat_goal}g C={carbs_goal}g"
+        )
     except Exception as e:
         logger.error(f"[User] Error saving profile for {user_id}: {e}")
         raise

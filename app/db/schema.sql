@@ -16,7 +16,11 @@ CREATE TABLE IF NOT EXISTS users_tbl (
     weight_kg FLOAT DEFAULT NULL,
     birth_year INT DEFAULT NULL,
     activity_level VARCHAR(20) DEFAULT NULL,
-    calorie_goal INT DEFAULT NULL
+    calorie_goal INT DEFAULT NULL,
+    fitness_goal VARCHAR(20) DEFAULT NULL,
+    protein_goal INT DEFAULT NULL,
+    fat_goal INT DEFAULT NULL,
+    carbs_goal INT DEFAULT NULL
 );
 
 -- Миграция для существующей БД (запустить вручную на проде):
@@ -27,6 +31,13 @@ CREATE TABLE IF NOT EXISTS users_tbl (
 --   ADD COLUMN birth_year INT DEFAULT NULL,
 --   ADD COLUMN activity_level VARCHAR(20) DEFAULT NULL,
 --   ADD COLUMN calorie_goal INT DEFAULT NULL;
+
+-- Миграция v2: фитнес-цель + нормы БЖУ
+-- ALTER TABLE users_tbl
+--   ADD COLUMN fitness_goal VARCHAR(20) DEFAULT NULL,
+--   ADD COLUMN protein_goal INT DEFAULT NULL,
+--   ADD COLUMN fat_goal INT DEFAULT NULL,
+--   ADD COLUMN carbs_goal INT DEFAULT NULL;
 
 CREATE TABLE IF NOT EXISTS payment_tbl (
     id INT AUTO_INCREMENT PRIMARY KEY,

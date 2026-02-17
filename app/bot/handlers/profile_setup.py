@@ -1,6 +1,6 @@
 # app/bot/handlers/profile_setup.py
 """
-Wizard настройки профиля: пол → год рождения → рост → вес → активность → результат.
+Wizard настройки профиля: пол → год рождения → рост → вес → активность → цель → результат.
 Вызывается из:
 1. После выбора таймзоны в /start (новые пользователи)
 2. Кнопка «Настроить цель калорий» в /profile (существующие)
@@ -21,6 +21,12 @@ import logging
 
 router = Router()
 logger = logging.getLogger(__name__)
+
+FITNESS_GOAL_LABELS = {
+    "lose": "Похудеть",
+    "gain": "Набрать мышечную массу",
+    "maintain": "Поддержание формы",
+}
 
 
 # ============================================
@@ -61,6 +67,20 @@ def activity_keyboard() -> InlineKeyboardMarkup:
         for key, label in labels.items()
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def fitness_goal_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="🔥 Похудеть", callback_data="profile_setup:goal:lose"
+        )],
+        [InlineKeyboardButton(
+            text="💪 Набрать мышечную массу", callback_data="profile_setup:goal:gain"
+        )],
+        [InlineKeyboardButton(
+            text="⚖️ Поддержание формы", callback_data="profile_setup:goal:maintain"
+        )],
+    ])
 
 
 # ============================================
@@ -215,21 +235,41 @@ async def handle_weight(message: Message, state: FSMContext):
 
 
 # ============================================
-# ШАГ 5: Активность (callback) → расчёт и сохранение
+# ШАГ 5: Активность (callback) → спрашиваем цель
 # ============================================
 
 @router.callback_query(F.data.startswith("profile_setup:activity:"))
 async def handle_activity(callback: CallbackQuery, state: FSMContext):
-    """Финал: расчёт BMR/TDEE, сохранение, показ результата"""
+    """Шаг 5 → 6: активность выбрана, спрашиваем цель"""
     activity = callback.data.split(":")[-1]
+    await state.update_data(profile_activity=activity)
+
+    await callback.answer()
+    await callback.message.edit_text(
+        "<b>Какая у вас цель?</b>\n\n"
+        "Это влияет на расчёт калорий и нормы белков, жиров, углеводов:",
+        reply_markup=fitness_goal_keyboard(),
+        parse_mode="HTML"
+    )
+
+
+# ============================================
+# ШАГ 6: Цель (callback) → расчёт и сохранение
+# ============================================
+
+@router.callback_query(F.data.startswith("profile_setup:goal:"))
+async def handle_fitness_goal(callback: CallbackQuery, state: FSMContext):
+    """Финал: расчёт КБЖУ, сохранение, показ результата"""
+    fitness_goal = callback.data.split(":")[-1]
     data = await state.get_data()
 
     gender = data.get("profile_gender")
     birth_year = data.get("profile_birth_year")
     height = data.get("profile_height")
     weight = data.get("profile_weight")
+    activity = data.get("profile_activity")
 
-    if not all([gender, birth_year, height, weight]):
+    if not all([gender, birth_year, height, weight, activity]):
         await callback.answer(
             "Данные потеряны. Начните заново: /profile",
             show_alert=True
@@ -237,12 +277,13 @@ async def handle_activity(callback: CallbackQuery, state: FSMContext):
         await state.clear()
         return
 
-    bmr, tdee, recommended_goal = calculate_bmr_tdee(
+    bmr, tdee, calorie_goal, protein_g, fat_g, carbs_g = calculate_bmr_tdee(
         gender=gender,
         weight_kg=weight,
         height_cm=height,
         birth_year=birth_year,
         activity_level=activity,
+        fitness_goal=fitness_goal,
     )
 
     user_id = callback.from_user.id
@@ -255,7 +296,11 @@ async def handle_activity(callback: CallbackQuery, state: FSMContext):
             weight_kg=weight,
             birth_year=birth_year,
             activity_level=activity,
-            calorie_goal=recommended_goal,
+            calorie_goal=calorie_goal,
+            fitness_goal=fitness_goal,
+            protein_goal=protein_g,
+            fat_goal=fat_g,
+            carbs_goal=carbs_g,
         )
     except Exception as e:
         logger.exception(f"[ProfileSetup] Error saving for {user_id}: {e}")
@@ -278,22 +323,29 @@ async def handle_activity(callback: CallbackQuery, state: FSMContext):
     }
     gender_label = "Мужской" if gender == "male" else "Женский"
     age = datetime.now().year - birth_year
+    goal_label = FITNESS_GOAL_LABELS.get(fitness_goal, fitness_goal)
 
     await callback.message.edit_text(
-        f"<b>Цель калорий рассчитана!</b>\n\n"
+        f"<b>Ваш план рассчитан!</b>\n\n"
         f"Пол: {gender_label}\n"
         f"Возраст: {age}\n"
         f"Рост: {height} см\n"
         f"Вес: {weight} кг\n"
-        f"Активность: {activity_labels.get(activity, activity)}\n\n"
+        f"Активность: {activity_labels.get(activity, activity)}\n"
+        f"Цель: <b>{goal_label}</b>\n\n"
         f"BMR (базовый обмен): <b>{bmr:.0f}</b> ккал\n"
         f"TDEE (с активностью): <b>{tdee:.0f}</b> ккал\n\n"
-        f"Ваша дневная цель: <b>{recommended_goal}</b> ккал\n\n"
+        f"<b>Ваша дневная норма:</b>\n"
+        f"Калории: <b>{calorie_goal}</b> ккал\n"
+        f"Белки: <b>{protein_g}</b>г\n"
+        f"Жиры: <b>{fat_g}</b>г\n"
+        f"Углеводы: <b>{carbs_g}</b>г\n\n"
         f"Изменить: /profile",
         parse_mode="HTML"
     )
 
     logger.info(
         f"[ProfileSetup] Saved for {user_id}: "
-        f"BMR={bmr:.0f}, TDEE={tdee:.0f}, goal={recommended_goal}"
+        f"fitness={fitness_goal}, cal={calorie_goal}, "
+        f"P={protein_g}g F={fat_g}g C={carbs_g}g"
     )

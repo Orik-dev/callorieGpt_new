@@ -464,16 +464,13 @@ async def process_universal_request(
         except Exception as e:
             logger.warning(f"[GPT] Error saving chat history for {user_id}: {e}")
 
-        # Персональная цель калорий
-        calorie_goal = user.get("calorie_goal") or settings.default_calorie_goal
-
         # Роутинг
         if intent == "unknown":
             await handle_unknown(user_id, chat_id, message_id, notes)
         elif intent == "calculate":
             await handle_calculate(user_id, chat_id, message_id, items)
         elif intent == "add_previous":
-            await handle_add_previous(user_id, chat_id, message_id, user_tz, calorie_goal)
+            await handle_add_previous(user_id, chat_id, message_id, user_tz, user)
         elif intent == "delete":
             await handle_delete(user_id, chat_id, message_id, data, user_tz)
         elif intent == "edit":
@@ -484,7 +481,7 @@ async def process_universal_request(
                 await safe_send_message(bot, chat_id, notes or "Не распознал еду. Опишите подробнее.")
                 await refund_token(user_id)
                 return
-            await handle_add(user_id, chat_id, message_id, items, user_tz, image_url, meal_time, calorie_goal)
+            await handle_add(user_id, chat_id, message_id, items, user_tz, image_url, meal_time, user)
         
     except Exception as e:
         logger.exception(f"[GPT] Error: {e}")
@@ -507,10 +504,11 @@ async def handle_unknown(user_id: int, chat_id: int, message_id: int, notes: str
     await refund_token(user_id)
 
 
-async def handle_add(user_id: int, chat_id: int, message_id: int, items: list, user_tz: str, image_url: str = None, meal_time: str = None, calorie_goal: int = None):
+async def handle_add(user_id: int, chat_id: int, message_id: int, items: list, user_tz: str, image_url: str = None, meal_time: str = None, user_data: dict = None):
     """Добавление"""
     try:
-        goal = calorie_goal or settings.default_calorie_goal
+        user_data = user_data or {}
+        goal = user_data.get("calorie_goal") or settings.default_calorie_goal
 
         result = await save_meals(user_id, {"items": items, "notes": ""}, user_tz, image_url, meal_time=meal_time)
         added_ids = result.get('added_meal_ids', [])
@@ -520,17 +518,32 @@ async def handle_add(user_id: int, chat_id: int, message_id: int, items: list, u
 
         text = format_add_success(items, summary["totals"], date_str)
 
-        # Прогресс калорий за день (персональная цель)
-        cal = float(summary["totals"].get('total_calories', 0))
+        # Прогресс калорий за день
+        totals = summary["totals"]
+        cal = float(totals.get('total_calories', 0))
         pct = min(cal / goal * 100, 100) if goal > 0 else 0
         filled = int(pct / 10)
         bar = "▓" * filled + "░" * (10 - filled)
         text += f"\n\n{bar} {pct:.0f}% от ~{goal} ккал"
 
+        # Прогресс БЖУ (если есть цели)
+        p_goal = user_data.get("protein_goal")
+        f_goal = user_data.get("fat_goal")
+        c_goal = user_data.get("carbs_goal")
+        if p_goal and f_goal and c_goal:
+            p_now = float(totals.get('total_protein', 0))
+            f_now = float(totals.get('total_fat', 0))
+            c_now = float(totals.get('total_carbs', 0))
+            text += (
+                f"\nБелки: {p_now:.0f}/{p_goal}г · "
+                f"Жиры: {f_now:.0f}/{f_goal}г · "
+                f"Углеводы: {c_now:.0f}/{c_goal}г"
+            )
+
         # Показываем остаток запросов
         user = await get_user_by_id(user_id)
         remaining = user.get('free_tokens', 0) if user else 0
-        text += f"\n💬 Осталось запросов: {remaining}"
+        text += f"\n\nОсталось запросов: {remaining}"
 
         buttons = []
         if added_ids:
@@ -568,7 +581,7 @@ async def handle_calculate(user_id: int, chat_id: int, message_id: int, items: l
     await safe_send_message(bot, chat_id, text, keyboard)
 
 
-async def handle_add_previous(user_id: int, chat_id: int, message_id: int, user_tz: str, calorie_goal: int = None):
+async def handle_add_previous(user_id: int, chat_id: int, message_id: int, user_tz: str, user_data: dict = None):
     """Добавить расчёт"""
     items = await get_calc_data(user_id)
 
@@ -583,7 +596,7 @@ async def handle_add_previous(user_id: int, chat_id: int, message_id: int, user_
     if last_key:
         await redis.delete(last_key)
     await redis.delete(f"calc_last:{user_id}")
-    await handle_add(user_id, chat_id, message_id, items, user_tz, None, None, calorie_goal)
+    await handle_add(user_id, chat_id, message_id, items, user_tz, None, None, user_data)
 
 
 async def handle_delete(user_id: int, chat_id: int, message_id: int, data: dict, user_tz: str):
