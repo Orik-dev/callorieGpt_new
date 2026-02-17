@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, date
 from app.config import settings
 import logging
 import re
+import pytz
 
 logger = logging.getLogger(__name__)
 
@@ -60,10 +61,17 @@ async def get_or_create_user(tg_id: int, tg_name: str) -> dict:
     
     # Проверка актуальности подписки (только если дата точно устарела)
     exp_date = user.get("expiration_date")
-    if exp_date and exp_date < datetime.now().date():
+    user_tz = user.get("timezone", "Europe/Moscow")
+    try:
+        tz = pytz.timezone(user_tz)
+    except Exception:
+        tz = pytz.timezone("Europe/Moscow")
+    today = datetime.now(tz).date()
+
+    if exp_date and exp_date < today:
         # Двойная проверка из БД перед сбросом (защита от race condition)
         fresh_user = await get_user_by_id(tg_id)
-        if fresh_user["expiration_date"] and fresh_user["expiration_date"] < datetime.now().date():
+        if fresh_user["expiration_date"] and fresh_user["expiration_date"] < today:
             logger.info(f"[Subscription] User {tg_id} subscription expired, resetting")
             async with mysql.pool.acquire() as conn:
                 async with conn.cursor() as cur:
@@ -134,7 +142,12 @@ async def extend_subscription(
         return
     
     current_expiration = user.get("expiration_date")
-    today = datetime.now().date()
+    user_tz = user.get("timezone", "Europe/Moscow")
+    try:
+        tz = pytz.timezone(user_tz)
+    except Exception:
+        tz = pytz.timezone("Europe/Moscow")
+    today = datetime.now(tz).date()
 
     # Расчет новой даты окончания подписки
     if current_expiration and current_expiration >= today:
@@ -214,9 +227,11 @@ async def update_tokens_daily():
     - Без подписки → 5 токенов
     """
     logger.info("📅 Starting daily token reset...")
-    
+
     try:
-        today = datetime.now().date()
+        # Используем московское время (основная аудитория)
+        msk = pytz.timezone("Europe/Moscow")
+        today = datetime.now(msk).date()
 
         async with mysql.pool.acquire() as conn:
             async with conn.cursor() as cur:

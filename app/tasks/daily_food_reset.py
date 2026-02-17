@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime, timedelta
 from app.db.mysql import mysql
+import pytz
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +21,9 @@ async def reset_daily_food(ctx):
     logger.info("[Task] Запуск ежедневной очистки старой еды...")
     
     try:
-        # Вычисляем дату 7 дней назад
-        cutoff_date = datetime.now().date() - timedelta(days=7)
+        # Вычисляем дату 7 дней назад (московское время — основная аудитория)
+        msk = pytz.timezone("Europe/Moscow")
+        cutoff_date = datetime.now(msk).date() - timedelta(days=7)
         
         async with mysql.pool.acquire() as conn:
             async with conn.cursor() as cur:

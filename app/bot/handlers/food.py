@@ -308,9 +308,10 @@ async def handle_add_calculated(callback: CallbackQuery):
     """Добавить рассчитанное в рацион"""
     try:
         user_id = callback.from_user.id
-        key = f"calc:{user_id}"
-        data = await redis.get(key)
-        
+        # Ключ приходит в callback_data: "addcalc:calc:USER_ID:UUID"
+        calc_key = callback.data.split(":", 1)[1]  # "calc:USER_ID:UUID"
+        data = await redis.get(calc_key)
+
         if not data:
             await safe_callback_answer(callback, "Время истекло. Отправьте заново.", show_alert=True)
             try:
@@ -318,9 +319,9 @@ async def handle_add_calculated(callback: CallbackQuery):
             except:
                 pass
             return
-        
+
         items = json.loads(data)
-        await redis.delete(key)
+        await redis.delete(calc_key)
         
         try:
             await callback.message.edit_reply_markup(reply_markup=None)

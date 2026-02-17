@@ -262,16 +262,25 @@ async def save_undo_data(meal_ids: list, user_id: int) -> str:
 
 
 async def save_calc_data(items: list, user_id: int) -> str:
-    """Сохраняет расчёт"""
-    key = f"calc:{user_id}"
+    """Сохраняет расчёт с уникальным ключом"""
+    calc_id = uuid.uuid4().hex[:8]
+    key = f"calc:{user_id}:{calc_id}"
     await redis.setex(key, CALC_DATA_TTL, json.dumps(items))
+    # Сохраняем ссылку на последний расчёт (для add_previous через текст)
+    await redis.setex(f"calc_last:{user_id}", CALC_DATA_TTL, key)
     return key
 
 
-async def get_calc_data(user_id: int) -> list:
-    """Получает расчёт"""
-    key = f"calc:{user_id}"
-    data = await redis.get(key)
+async def get_calc_data(user_id: int, calc_key: str = None) -> list:
+    """Получает расчёт по ключу или последний"""
+    if calc_key:
+        data = await redis.get(calc_key)
+    else:
+        # Берём последний расчёт (для add_previous через текст)
+        last_key = await redis.get(f"calc_last:{user_id}")
+        if not last_key:
+            return []
+        data = await redis.get(last_key)
     return json.loads(data) if data else []
 
 
@@ -433,12 +442,12 @@ async def handle_calculate(user_id: int, chat_id: int, message_id: int, items: l
         await safe_send_message(bot, chat_id, "Не удалось определить блюдо.")
         await refund_token(user_id)
         return
-    
-    await save_calc_data(items, user_id)
+
+    calc_key = await save_calc_data(items, user_id)
     text = format_calculate_result(items)
-    
+
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Добавить в рацион", callback_data=f"addcalc:{user_id}")]
+        [InlineKeyboardButton(text="Добавить в рацион", callback_data=f"addcalc:{calc_key}")]
     ])
     
     await safe_delete_message(bot, chat_id, message_id)
@@ -448,14 +457,18 @@ async def handle_calculate(user_id: int, chat_id: int, message_id: int, items: l
 async def handle_add_previous(user_id: int, chat_id: int, message_id: int, user_tz: str):
     """Добавить расчёт"""
     items = await get_calc_data(user_id)
-    
+
     if not items:
         await safe_delete_message(bot, chat_id, message_id)
         await safe_send_message(bot, chat_id, "Нет сохранённого расчёта. Сначала отправьте еду.")
         await refund_token(user_id)
         return
-    
-    await redis.delete(f"calc:{user_id}")
+
+    # Удаляем ссылку на последний расчёт
+    last_key = await redis.get(f"calc_last:{user_id}")
+    if last_key:
+        await redis.delete(last_key)
+    await redis.delete(f"calc_last:{user_id}")
     await handle_add(user_id, chat_id, message_id, items, user_tz, None)
 
 

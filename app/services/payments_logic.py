@@ -3,6 +3,7 @@ import asyncio
 import logging
 from datetime import datetime
 from yookassa import Configuration, Payment
+import pytz
 
 from app.config import settings
 from app.db.queries.payment_queries import save_payment
@@ -153,7 +154,14 @@ async def try_autopay(user: dict):
         return
 
     expiration_date = user.get("expiration_date")
-    if expiration_date is not None and expiration_date >= datetime.now().date():
+    user_tz = user.get("timezone", "Europe/Moscow")
+    try:
+        tz = pytz.timezone(user_tz)
+    except Exception:
+        tz = pytz.timezone("Europe/Moscow")
+    today = datetime.now(tz).date()
+
+    if expiration_date is not None and expiration_date >= today:
         logger.debug(f"[AutoPay] User {user_id}: subscription still active")
         return
 
@@ -199,7 +207,11 @@ async def try_autopay(user: dict):
 
     except Exception as e:
         logger.error(f"[AutoPay] ❌ User {user_id} error: {e}")
-        
+
+        # Задержка перед следующей попыткой (экспоненциальная)
+        delay = min(5 * (2 ** attempts), 60)
+        await asyncio.sleep(delay)
+
         async with mysql.pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
