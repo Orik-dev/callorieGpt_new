@@ -34,6 +34,7 @@ async def backup_database(ctx):
         cmd = (
             f"mysqldump -h {settings.db_host} -P {settings.db_port} "
             f"-u {settings.db_user} -p'{settings.db_password}' "
+            f"--ssl-mode=DISABLED "
             f"{settings.db_name} > {filepath}"
         )
 

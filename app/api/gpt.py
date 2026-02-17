@@ -181,12 +181,15 @@ async def ai_request(
                     if result is None:
                         refusal = message.get("refusal")
                         finish_reason = data["choices"][0].get("finish_reason")
-                        logger.error(
+                        logger.warning(
                             f"[GPT API] Content is None! "
                             f"refusal={refusal}, finish_reason={finish_reason}, "
                             f"message={message}"
                         )
-                        # Попробуем ещё раз
+                        # Если GPT отказался — ретраить бессмысленно
+                        if refusal:
+                            return 200, "Не удалось распознать еду на изображении. Попробуйте отправить другое фото или опишите блюдо текстом."
+                        # Иначе попробуем ещё раз
                         if attempt < MAX_RETRIES - 1:
                             await asyncio.sleep(RETRY_DELAYS[attempt])
                             continue
