@@ -430,6 +430,16 @@ async def process_universal_request(
             await refund_token(user_id)
             return
         
+        if code == 279:
+            await safe_delete_message(bot, chat_id, message_id)
+            await safe_send_message(
+                bot, chat_id,
+                "Не удалось распознать еду на изображении. "
+                "Попробуйте отправить другое фото или опишите блюдо текстом."
+            )
+            await refund_token(user_id)
+            return
+
         if code != 200 or not gpt_response:
             await safe_delete_message(bot, chat_id, message_id)
             await safe_send_message(bot, chat_id, "Не удалось обработать. Попробуйте ещё раз.")

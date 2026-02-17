@@ -188,7 +188,7 @@ async def ai_request(
                         )
                         # Если GPT отказался — ретраить бессмысленно
                         if refusal:
-                            return 200, "Не удалось распознать еду на изображении. Попробуйте отправить другое фото или опишите блюдо текстом."
+                            return 279, refusal
                         # Иначе попробуем ещё раз
                         if attempt < MAX_RETRIES - 1:
                             await asyncio.sleep(RETRY_DELAYS[attempt])
