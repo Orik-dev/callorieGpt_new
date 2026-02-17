@@ -20,6 +20,13 @@ def _get_client() -> httpx.AsyncClient:
         _http_client = httpx.AsyncClient(timeout=settings.openai_timeout)
     return _http_client
 
+
+async def close_client():
+    global _http_client
+    if _http_client and not _http_client.is_closed:
+        await _http_client.aclose()
+        _http_client = None
+
 SYSTEM_PROMPT = """Ты — эксперт по питанию. Анализируй сообщения пользователя и определяй что он хочет.
 
 ТИПЫ НАМЕРЕНИЙ (intent):

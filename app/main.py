@@ -67,6 +67,19 @@ async def lifespan(app: FastAPI):
         logger.error(f"Ошибка при закрытии bot session: {e}")
 
     try:
+        from app.api.gpt import close_client
+        await close_client()
+    except Exception as e:
+        logger.error(f"Ошибка при закрытии httpx client: {e}")
+
+    try:
+        from app.db.redis_client import arq_redis
+        if arq_redis:
+            await arq_redis.close()
+    except Exception as e:
+        logger.error(f"Ошибка при закрытии arq_redis: {e}")
+
+    try:
         await redis.close()
     except Exception as e:
         logger.error(f"Ошибка при закрытии Redis: {e}")

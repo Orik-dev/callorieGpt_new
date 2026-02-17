@@ -3,7 +3,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.enums import ParseMode
-from app.db.redis_client import redis, init_arq_redis
+from app.db.redis_client import redis
 from app.config import settings
 from app.bot.middleware.fastapi_app import FastAPIAppMiddleware
 from app.bot.middleware.kick_on_private import KickNonPrivateMiddleware
@@ -40,8 +40,6 @@ def setup_middlewares(app_instance):
     
     ИСПРАВЛЕНИЕ: RedisMiddleware теперь не требует параметр при инициализации
     """
-    from app.db.redis_client import get_arq_redis
-
     dp.message.middleware(KickNonPrivateMiddleware())
     dp.message.middleware(FastAPIAppMiddleware(app_instance))
     dp.message.middleware(RedisMiddleware())  # ✅ ИСПРАВЛЕНИЕ: без параметра

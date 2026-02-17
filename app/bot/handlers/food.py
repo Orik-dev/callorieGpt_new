@@ -336,7 +336,7 @@ async def handle_add_calculated(callback: CallbackQuery):
         
         try:
             await callback.message.edit_reply_markup(reply_markup=None)
-        except:
+        except Exception:
             pass
         
         await safe_callback_answer(callback, "Добавляю...")

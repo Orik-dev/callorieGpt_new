@@ -147,7 +147,7 @@ async def safe_edit_message(
                         parse_mode=None
                     )
                     return True
-                except:
+                except Exception:
                     return False
             
             logger.error(f"Bad request editing: {e}")

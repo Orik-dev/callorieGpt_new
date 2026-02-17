@@ -120,28 +120,36 @@ async def show_rub(callback: CallbackQuery):
 @router.callback_query(F.data == "sub_method_stars")
 async def show_stars(callback: CallbackQuery):
     """Показывает тарифы для оплаты звёздами"""
-    await callback.message.edit_text(
-        "⭐ <b>Оплата звёздами Telegram</b>\n\n"
-        "Выберите тариф:",
-        reply_markup=stars_keyboard(),
-        parse_mode="HTML",
-    )
+    try:
+        await callback.message.edit_text(
+            "⭐ <b>Оплата звёздами Telegram</b>\n\n"
+            "Выберите тариф:",
+            reply_markup=stars_keyboard(),
+            parse_mode="HTML",
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e):
+            raise
     await callback.answer()
 
 
 @router.callback_query(F.data == "sub_back")
 async def back_to_methods(callback: CallbackQuery):
     """Возврат к выбору способа оплаты"""
-    await callback.message.edit_text(
-        "📦 <b>Подписка на бота</b>\n\n"
-        "✨ С подпиской доступно:\n"
-        "• 25 запросов в день (вместо 5)\n"
-        "• Обновление токенов каждый день\n"
-        "• Приоритетная поддержка\n\n"
-        "Выберите способ оплаты:",
-        reply_markup=method_keyboard(),
-        parse_mode="HTML",
-    )
+    try:
+        await callback.message.edit_text(
+            "📦 <b>Подписка на бота</b>\n\n"
+            "✨ С подпиской доступно:\n"
+            "• 25 запросов в день (вместо 5)\n"
+            "• Обновление токенов каждый день\n"
+            "• Приоритетная поддержка\n\n"
+            "Выберите способ оплаты:",
+            reply_markup=method_keyboard(),
+            parse_mode="HTML",
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e):
+            raise
     await callback.answer()
 
 
