@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 # ============================================
 UNDO_KEY_TTL = 300        # 5 минут на отмену
 CALC_DATA_TTL = 600       # 10 минут для данных расчёта
-MAX_FOOD_NAME_LEN = 50    # Макс длина названия
+MAX_FOOD_NAME_LEN = 100   # Макс длина названия
 MAX_WEIGHT_GRAMS = 3000   # Макс вес порции
 MIN_WEIGHT_GRAMS = 1      # Мин вес
 MAX_CALORIES = 5000       # Макс калорий на блюдо
@@ -53,9 +53,9 @@ def format_meal_line(meal: dict, show_macros: bool = True) -> str:
         p = meal.get('protein', 0)
         f = meal.get('fat', 0)
         c = meal.get('carbs', 0)
-        return f"<b>{name}</b>\n{weight}г · {cal:.0f} ккал · Б{p:.0f} Ж{f:.0f} У{c:.0f}"
+        return f"<b>{name}</b>\n{weight}г · {cal:.1f} ккал · Б{p:.1f} Ж{f:.1f} У{c:.1f}"
     else:
-        return f"<b>{name}</b> — {weight}г, {cal:.0f} ккал"
+        return f"<b>{name}</b> — {weight}г, {cal:.1f} ккал"
 
 
 def format_totals(totals: dict, date_str: str = None) -> str:
@@ -70,8 +70,8 @@ def format_totals(totals: dict, date_str: str = None) -> str:
     
     return (
         f"<b>{header}:</b>\n"
-        f"{cal:.0f} ккал · {count} приёмов\n"
-        f"Б {p:.0f}г · Ж {f:.0f}г · У {c:.0f}г"
+        f"{cal:.1f} ккал · {count} приёмов\n"
+        f"Б {p:.1f}г · Ж {f:.1f}г · У {c:.1f}г"
     )
 
 
@@ -107,8 +107,8 @@ def format_calculate_result(items: list) -> str:
         total_c += meal.get('carbs', 0)
     
     lines.append("─" * 20)
-    lines.append(f"<b>Всего:</b> {total_cal:.0f} ккал")
-    lines.append(f"Б {total_p:.0f}г · Ж {total_f:.0f}г · У {total_c:.0f}г")
+    lines.append(f"<b>Всего:</b> {total_cal:.1f} ккал")
+    lines.append(f"Б {total_p:.1f}г · Ж {total_f:.1f}г · У {total_c:.1f}г")
     lines.append("")
     lines.append("<i>Не добавлено в рацион</i>")
     
@@ -118,7 +118,7 @@ def format_calculate_result(items: list) -> str:
 def format_delete_success(food_name: str, remaining_cal: float) -> str:
     """Успешное удаление"""
     name = escape_html(food_name[:MAX_FOOD_NAME_LEN])
-    return f"<b>✓ Удалено:</b> {name}\n\nОсталось: {remaining_cal:.0f} ккал"
+    return f"<b>✓ Удалено:</b> {name}\n\nИтого за день: {remaining_cal:.1f} ккал"
 
 
 def format_edit_success(meal: dict, totals: dict) -> str:
@@ -127,7 +127,7 @@ def format_edit_success(meal: dict, totals: dict) -> str:
     lines.append(format_meal_line(meal, show_macros=True))
     lines.append("")
     lines.append("─" * 20)
-    lines.append(f"Итого: {float(totals.get('total_calories', 0)):.0f} ккал")
+    lines.append(f"Итого: {float(totals.get('total_calories', 0)):.1f} ккал")
     return "\n".join(lines)
 
 
@@ -142,7 +142,7 @@ def format_today_meals(meals: list) -> str:
         time = meal["meal_datetime"].strftime("%H:%M")
         name = escape_html(meal['food_name'][:30])
         cal = float(meal.get('calories', 0))
-        lines.append(f"{time}  {name} — {cal:.0f} ккал")
+        lines.append(f"{time}  {name} — {cal:.1f} ккал")
     
     if len(meals) > 7:
         lines.append(f"\n<i>...и ещё {len(meals) - 7}</i>")
@@ -248,7 +248,7 @@ async def get_meals_context(user_id: int, user_tz: str) -> str:
         for meal in meals:
             time = meal["meal_datetime"].strftime("%H:%M")
             cal = float(meal.get('calories', 0))
-            lines.append(f"- {time}: {meal['food_name']} ({cal:.0f} ккал)")
+            lines.append(f"- {time}: {meal['food_name']} ({cal:.1f} ккал)")
         return "\n".join(lines)
     except:
         return ""

@@ -14,7 +14,10 @@ class Settings:
         # OpenAI API
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
         self.openai_api_url = os.getenv("OPENAI_API_URL", "https://api.openai.com/v1/chat/completions")
-        self.openai_default_model = os.getenv("OPENAI_DEFAULT_MODEL", "gpt-4o")
+        self.openai_default_model = os.getenv("OPENAI_DEFAULT_MODEL", "gpt-5.2")
+        self.openai_timeout = int(os.getenv("OPENAI_TIMEOUT_SECONDS", 25))
+        self.openai_max_tokens = int(os.getenv("OPENAI_MAX_TOKENS", 2048))
+        self.openai_temperature = float(os.getenv("OPENAI_TEMPERATURE", 0.5))
 
         # YooKassa API
         self.yookassa_store_id = os.getenv("YOKASSA_STORE_ID")

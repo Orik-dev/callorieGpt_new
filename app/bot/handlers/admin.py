@@ -48,8 +48,8 @@ async def show_users_count(message: Message, **kwargs: Any):
                 
                 # Новых за последние 7 дней
                 await cur.execute("""
-                    SELECT COUNT(*) as count FROM users_tbl 
-                    WHERE id > (SELECT MAX(id) FROM users_tbl) - 1000
+                    SELECT COUNT(*) as count FROM users_tbl
+                    WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
                 """)
                 new_week = await cur.fetchone()
 

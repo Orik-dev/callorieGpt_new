@@ -47,94 +47,6 @@ def format_date_ru(date_obj) -> str:
     return f"{date_obj.day} {months[date_obj.month]}"
 
 
-# @router.message(Command("food"))
-# async def cmd_food(message: Message):
-#     """Команда /food - рацион за сегодня"""
-#     user_id = message.from_user.id
-#     logger.info(f"[Food] /food from user {user_id}")
-    
-#     try:
-#         user = await get_user_by_id(user_id)
-#         if not user:
-#             await message.answer("Пользователь не найден. /start")
-#             return
-        
-#         user_tz = user.get('timezone', 'Europe/Moscow')
-#         history = await get_food_history(user_id, user_tz, days=7)
-        
-#         if not history:
-#             await message.answer(
-#                 "Пока нет записей.\n\n"
-#                 "Отправь фото еды или напиши что съел.",
-#                 parse_mode="HTML"
-#             )
-#             return
-        
-#         today = history[0]
-#         tz = pytz.timezone(user_tz)
-#         now = datetime.now(tz)
-        
-#         # Заголовок
-#         if today['date'] == now.date():
-#             text = f"<b>Сегодня, {format_date_ru(now)}</b>\n\n"
-#         else:
-#             text = f"<b>{format_date_ru(today['date'])}</b>\n\n"
-        
-#         # Приёмы пищи
-#         if today['meals']:
-#             for meal in today['meals']:
-#                 time = meal["meal_datetime"].strftime("%H:%M")
-#                 name = escape_html(meal['food_name'][:35])
-#                 cal = float(meal['calories'])
-#                 p = float(meal['protein'])
-#                 f = float(meal['fat'])
-#                 c = float(meal['carbs'])
-                
-#                 text += f"<b>{time}</b>  {name}\n"
-#                 text += f"        {cal:.0f} ккал · Б{p:.0f} Ж{f:.0f} У{c:.0f}\n\n"
-#         else:
-#             text += "<i>Нет приёмов пищи</i>\n\n"
-        
-#         # Итого
-#         text += "─" * 24 + "\n"
-#         text += f"<b>Итого:</b> {float(today['total_calories']):.0f} ккал\n"
-#         text += f"Б {float(today['total_protein']):.0f}г · "
-#         text += f"Ж {float(today['total_fat']):.0f}г · "
-#         text += f"У {float(today['total_carbs']):.0f}г"
-        
-#         # Кнопки
-#         buttons = []
-        
-#         # Кнопка удаления последнего
-#         if today['meals']:
-#             last_meal = today['meals'][-1]
-#             buttons.append([
-#                 InlineKeyboardButton(
-#                     text="Удалить последнее",
-#                     callback_data=f"del:{last_meal['id']}"
-#                 )
-#             ])
-        
-#         # Предыдущие дни
-#         if len(history) > 1:
-#             for day in history[1:4]:
-#                 short_date = day["date"].strftime("%m%d")
-#                 date_text = format_date_ru(day["date"])
-#                 cal = float(day['total_calories'])
-#                 buttons.append([
-#                     InlineKeyboardButton(
-#                         text=f"{date_text} — {cal:.0f} ккал",
-#                         callback_data=f"day:{short_date}"
-#                     )
-#                 ])
-        
-#         keyboard = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
-#         await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
-        
-#     except Exception as e:
-#         logger.exception(f"[Food] Error: {e}")
-#         await message.answer("Ошибка. Попробуйте позже.")
-
 @router.message(Command("food"))
 async def cmd_food(message: Message):
     """Команда /food - рацион за сегодня"""
@@ -179,20 +91,20 @@ async def cmd_food(message: Message):
                 c = float(meal['carbs'])
                 
                 text += f"<b>{time}</b>  {name}\n"
-                text += f"        {cal:.0f} ккал · Б{p:.0f} Ж{f:.0f} У{c:.0f}\n\n"
+                text += f"        {cal:.1f} ккал · Б{p:.1f} Ж{f:.1f} У{c:.1f}\n\n"
         else:
             text += "<i>Нет приёмов пищи</i>\n\n"
         
         # Итого
         text += "─" * 24 + "\n"
-        text += f"<b>Итого:</b> {float(today['total_calories']):.0f} ккал\n"
-        text += f"Б {float(today['total_protein']):.0f}г · "
-        text += f"Ж {float(today['total_fat']):.0f}г · "
-        text += f"У {float(today['total_carbs']):.0f}г"
-        
+        text += f"<b>Итого:</b> {float(today['total_calories']):.1f} ккал\n"
+        text += f"Б {float(today['total_protein']):.1f}г · "
+        text += f"Ж {float(today['total_fat']):.1f}г · "
+        text += f"У {float(today['total_carbs']):.1f}г"
+
         # Кнопки
         buttons = []
-        
+
         # Кнопки удаления для КАЖДОГО приёма (макс 10)
         if today['meals']:
             for meal in today['meals'][-10:]:
@@ -213,7 +125,7 @@ async def cmd_food(message: Message):
                 cal = float(day['total_calories'])
                 buttons.append([
                     InlineKeyboardButton(
-                        text=f"{date_text} — {cal:.0f} ккал",
+                        text=f"{date_text} — {cal:.1f} ккал",
                         callback_data=f"day:{short_date}"
                     )
                 ])
@@ -254,12 +166,12 @@ async def callback_show_today(callback: CallbackQuery):
                 time = meal["meal_datetime"].strftime("%H:%M")
                 name = escape_html(meal['food_name'][:35])
                 cal = float(meal['calories'])
-                text += f"{time}  {name} — {cal:.0f} ккал\n"
+                text += f"{time}  {name} — {cal:.1f} ккал\n"
         else:
             text += "<i>Нет приёмов пищи</i>\n"
-        
+
         text += "\n" + "─" * 24 + "\n"
-        text += f"<b>Итого:</b> {float(totals['total_calories']):.0f} ккал"
+        text += f"<b>Итого:</b> {float(totals['total_calories']):.1f} ккал"
         
         await callback.message.answer(text, parse_mode="HTML")
         
@@ -300,15 +212,15 @@ async def handle_show_day(callback: CallbackQuery):
                 time = meal["meal_datetime"].strftime("%H:%M")
                 name = escape_html(meal['food_name'][:35])
                 cal = float(meal['calories'])
-                text += f"{time}  {name} — {cal:.0f} ккал\n"
+                text += f"{time}  {name} — {cal:.1f} ккал\n"
         else:
             text += "<i>Нет приёмов пищи</i>\n"
-        
+
         text += "\n" + "─" * 24 + "\n"
-        text += f"<b>Итого:</b> {float(day_data['total_calories']):.0f} ккал\n"
-        text += f"Б {float(day_data['total_protein']):.0f}г · "
-        text += f"Ж {float(day_data['total_fat']):.0f}г · "
-        text += f"У {float(day_data['total_carbs']):.0f}г"
+        text += f"<b>Итого:</b> {float(day_data['total_calories']):.1f} ккал\n"
+        text += f"Б {float(day_data['total_protein']):.1f}г · "
+        text += f"Ж {float(day_data['total_fat']):.1f}г · "
+        text += f"У {float(day_data['total_carbs']):.1f}г"
         
         await callback.message.answer(text, parse_mode="HTML")
         
@@ -340,7 +252,7 @@ async def handle_delete_meal(callback: CallbackQuery):
         if totals["meals_count"] == 0:
             text = "Все записи удалены.\n\nОтправь фото или напиши что съел."
         else:
-            text = f"<b>✓ Удалено</b>\n\nОсталось: {float(totals['total_calories']):.0f} ккал"
+            text = f"<b>✓ Удалено</b>\n\nИтого за день: {float(totals['total_calories']):.1f} ккал"
         
         await callback.message.edit_text(text, parse_mode="HTML", reply_markup=None)
         
@@ -380,7 +292,7 @@ async def handle_undo(callback: CallbackQuery):
             user_tz = user.get("timezone", "Europe/Moscow")
             summary = await get_today_summary(user_id, user_tz)
             
-            text = f"<b>✓ Отменено</b>\n\nОсталось: {float(summary['totals']['total_calories']):.0f} ккал"
+            text = f"<b>✓ Отменено</b>\n\nИтого за день: {float(summary['totals']['total_calories']):.1f} ккал"
             await callback.message.edit_text(text, reply_markup=None, parse_mode="HTML")
             await safe_callback_answer(callback, "Отменено")
         else:
@@ -434,12 +346,17 @@ async def handle_add_calculated(callback: CallbackQuery):
         lines = ["<b>✓ Добавлено</b>\n"]
         for meal in items:
             name = escape_html(meal.get('name', 'Блюдо'))
-            cal = meal.get('calories', 0)
-            lines.append(f"{name} — {cal} ккал")
+            weight = meal.get('weight_grams', 0)
+            cal = float(meal.get('calories', 0))
+            p = float(meal.get('protein', 0))
+            f = float(meal.get('fat', 0))
+            c = float(meal.get('carbs', 0))
+            lines.append(f"<b>{name}</b>\n{weight}г · {cal:.1f} ккал · Б{p:.1f} Ж{f:.1f} У{c:.1f}")
         
         lines.append("")
         lines.append("─" * 20)
-        lines.append(f"<b>Итого за {date_str}:</b> {float(totals['total_calories']):.0f} ккал")
+        lines.append(f"<b>Итого за {date_str}:</b> {float(totals['total_calories']):.1f} ккал")
+        lines.append(f"Б {float(totals['total_protein']):.1f}г · Ж {float(totals['total_fat']):.1f}г · У {float(totals['total_carbs']):.1f}г")
         
         buttons = []
         if added_ids:

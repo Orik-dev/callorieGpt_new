@@ -54,12 +54,23 @@ async def lifespan(app: FastAPI):
     yield  # Приложение работает
     
     logger.info("🔻 Приложение завершает работу: Закрытие ресурсов...")
-    
-    # Закрытие соединений
-    await close_db(app)
-    await bot.session.close()
-    await redis.close()
-    
+
+    # Закрытие соединений — каждое в try/except чтобы не блокировать остальные
+    try:
+        await close_db(app)
+    except Exception as e:
+        logger.error(f"Ошибка при закрытии БД: {e}")
+
+    try:
+        await bot.session.close()
+    except Exception as e:
+        logger.error(f"Ошибка при закрытии bot session: {e}")
+
+    try:
+        await redis.close()
+    except Exception as e:
+        logger.error(f"Ошибка при закрытии Redis: {e}")
+
     logger.info("👋 Ресурсы закрыты. Приложение остановлено.")
 
 

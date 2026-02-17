@@ -128,103 +128,6 @@ async def parse_gpt_response(response: str) -> Dict:
         raise MealParseError(f"Ошибка парсинга: {e}")
 
 
-# async def save_meals(
-#     user_id: int,
-#     parsed_data: Dict,
-#     user_tz: str = "Europe/Moscow",
-#     image_file_id: Optional[str] = None
-# ) -> Dict:
-#     """
-#     Сохраняет прием пищи в БД и обновляет дневные итоги
-    
-#     Args:
-#         user_id: Telegram ID пользователя
-#         parsed_data: Распарсенные данные от GPT
-#         user_tz: Часовой пояс пользователя
-#         image_file_id: ID фото в Telegram (если было)
-        
-#     Returns:
-#         Dict с обновленными итогами дня
-#     """
-#     try:
-#         # Получаем текущее время в timezone пользователя
-#         tz = pytz.timezone(user_tz)
-#         now = datetime.now(tz)
-#         today = now.date()
-        
-#         async with mysql.pool.acquire() as conn:
-#             async with conn.cursor() as cur:
-#                 await conn.begin()
-                
-#                 try:
-#                     # Сохраняем каждое блюдо
-#                     for item in parsed_data["items"]:
-#                         await cur.execute(
-#                             """INSERT INTO meals_history 
-#                             (tg_id, meal_date, meal_datetime, food_name, weight_grams,
-#                              calories, protein, fat, carbs, confidence_score, 
-#                              gpt_raw_response, image_file_id)
-#                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-#                             (
-#                                 user_id,
-#                                 today,
-#                                 now,
-#                                 item["name"][:255],
-#                                 int(item["weight_grams"]),
-#                                 Decimal(str(item["calories"])),
-#                                 Decimal(str(item["protein"])),
-#                                 Decimal(str(item["fat"])),
-#                                 Decimal(str(item["carbs"])),
-#                                 Decimal(str(item.get("confidence", 0.8))),
-#                                 json.dumps(parsed_data, ensure_ascii=False),
-#                                 image_file_id
-#                             )
-#                         )
-                    
-#                     # Пересчитываем итоги дня (атомарно)
-#                     await cur.execute(
-#                         """INSERT INTO daily_totals 
-#                             (tg_id, date, total_calories, total_protein, 
-#                              total_fat, total_carbs, meals_count)
-#                         SELECT 
-#                             tg_id, 
-#                             meal_date,
-#                             SUM(calories), 
-#                             SUM(protein), 
-#                             SUM(fat), 
-#                             SUM(carbs), 
-#                             COUNT(*)
-#                         FROM meals_history
-#                         WHERE tg_id = %s AND meal_date = %s
-#                         GROUP BY tg_id, meal_date
-#                         ON DUPLICATE KEY UPDATE
-#                             total_calories = VALUES(total_calories),
-#                             total_protein = VALUES(total_protein),
-#                             total_fat = VALUES(total_fat),
-#                             total_carbs = VALUES(total_carbs),
-#                             meals_count = VALUES(meals_count)""",
-#                         (user_id, today)
-#                     )
-                    
-#                     await conn.commit()
-                    
-#                     logger.info(
-#                         f"✅ Saved {len(parsed_data['items'])} meals for user {user_id} "
-#                         f"on {today}"
-#                     )
-                    
-#                     # Получаем обновленные итоги
-#                     return await get_today_summary(user_id, user_tz)
-                    
-#                 except Exception as e:
-#                     await conn.rollback()
-#                     logger.exception(f"Error saving meals for user {user_id}: {e}")
-#                     raise
-                    
-#     except Exception as e:
-#         logger.exception(f"Critical error in save_meals: {e}")
-#         raise
-
 async def save_meals(
     user_id: int,
     parsed_data: Dict,
@@ -398,7 +301,6 @@ async def get_week_summary(user_id: int, user_tz: str = "Europe/Moscow") -> List
         tz = pytz.timezone(user_tz)
         today = datetime.now(tz).date()
         
-        from datetime import timedelta
         week_ago = today - timedelta(days=6)
         
         results = await mysql.fetchall(
@@ -416,42 +318,81 @@ async def get_week_summary(user_id: int, user_tz: str = "Europe/Moscow") -> List
         return []
 
 
+async def _recalculate_daily_totals(cur, user_id: int, meal_date) -> None:
+    """Пересчитывает daily_totals после удаления"""
+    # Проверяем остались ли записи за этот день
+    await cur.execute(
+        "SELECT COUNT(*) as cnt FROM meals_history WHERE tg_id = %s AND meal_date = %s",
+        (user_id, meal_date)
+    )
+    row = await cur.fetchone()
+    count = row["cnt"] if row else 0
+
+    if count == 0:
+        # Нет записей — удаляем строку из daily_totals
+        await cur.execute(
+            "DELETE FROM daily_totals WHERE tg_id = %s AND date = %s",
+            (user_id, meal_date)
+        )
+    else:
+        # Пересчитываем итоги
+        await cur.execute(
+            """INSERT INTO daily_totals
+                (tg_id, date, total_calories, total_protein,
+                 total_fat, total_carbs, meals_count)
+            SELECT
+                tg_id, meal_date,
+                SUM(calories), SUM(protein), SUM(fat), SUM(carbs), COUNT(*)
+            FROM meals_history
+            WHERE tg_id = %s AND meal_date = %s
+            GROUP BY tg_id, meal_date
+            ON DUPLICATE KEY UPDATE
+                total_calories = VALUES(total_calories),
+                total_protein = VALUES(total_protein),
+                total_fat = VALUES(total_fat),
+                total_carbs = VALUES(total_carbs),
+                meals_count = VALUES(meals_count)""",
+            (user_id, meal_date)
+        )
+
+
 async def delete_meal(meal_id: int, user_id: int) -> bool:
-    """Удаляет прием пищи"""
+    """Удаляет прием пищи и пересчитывает daily_totals"""
     try:
         async with mysql.pool.acquire() as conn:
-            # ✅ ИЗМЕНИТЬ ЭТУ СТРОКУ:
-            async with conn.cursor(aiomysql.DictCursor) as cur:  # ← добавить aiomysql.DictCursor
-                
-                # Получаем дату для инвалидации кэша
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                # Получаем дату для пересчёта
                 await cur.execute(
                     "SELECT meal_date FROM meals_history WHERE id = %s AND tg_id = %s",
                     (meal_id, user_id)
                 )
-                
+
                 result = await cur.fetchone()
                 if not result:
                     logger.warning(f"[Meals] Meal {meal_id} not found for user {user_id}")
                     return False
-                
-                meal_date = result["meal_date"]  # ← теперь работает как dict
-                
+
+                meal_date = result["meal_date"]
+
                 # Удаляем
                 await cur.execute(
                     "DELETE FROM meals_history WHERE id = %s AND tg_id = %s",
                     (meal_id, user_id)
                 )
-                
+
                 if cur.rowcount > 0:
+                    # Пересчитываем daily_totals
+                    await _recalculate_daily_totals(cur, user_id, meal_date)
+
                     # Инвалидируем кэш
                     from app.db.redis_client import redis
                     cache_key = f"meals:summary:{user_id}:{meal_date}"
                     await redis.delete(cache_key)
-                    logger.info(f"[Meals] Deleted meal {meal_id}, invalidated cache for {meal_date}")
+                    logger.info(f"[Meals] Deleted meal {meal_id}, recalculated totals for {meal_date}")
                     return True
-                
+
                 return False
-                
+
     except Exception as e:
         logger.exception(f"Error deleting meal {meal_id}: {e}")
         return False
@@ -469,9 +410,6 @@ async def get_nutrition_stats(user_id: int, days: int = 7) -> Dict:
         Dict со статистикой
     """
     try:
-        from datetime import timedelta
-        import pytz
-        
         from app.services.user import get_user_by_id
         user = await get_user_by_id(user_id)
         tz = pytz.timezone(user.get("timezone", "Europe/Moscow"))
@@ -529,158 +467,51 @@ async def get_nutrition_stats(user_id: int, days: int = 7) -> Dict:
     except Exception as e:
         logger.exception(f"Error getting nutrition stats: {e}")
         return {}
-    
-    
-async def parse_gpt_response(response: str) -> Dict:
-    """
-    Парсит JSON-ответ от GPT и валидирует данные
-    
-    ИСПРАВЛЕНИЕ: Если items пустой - это специальный случай (не еда)
-    """
-    try:
-        response = response.strip()
-        
-        if '```' in response:
-            match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response, re.DOTALL)
-            if match:
-                response = match.group(1)
-            else:
-                parts = response.split('```')
-                if len(parts) >= 2:
-                    response = parts[1]
-                    if response.startswith('json'):
-                        response = response[4:]
-        
-        data = json.loads(response)
-        
-        if "items" not in data:
-            raise MealParseError("Отсутствует поле 'items' в ответе")
-        
-        if not isinstance(data["items"], list):
-            raise MealParseError("Поле 'items' должно быть массивом")
-        
-        # ИСПРАВЛЕНИЕ: Пустой массив = не еда
-        if len(data["items"]) == 0:
-            # Проверяем notes - возможно это намеренно (не еда)
-            notes = data.get("notes", "")
-            if "не продукт" in notes.lower() or "не еда" in notes.lower():
-                # Это валидный ответ "не еда" - возвращаем с флагом
-                data["is_not_food"] = True
-                return data
-            else:
-                raise MealParseError("Массив 'items' пуст - не удалось определить продукт")
-        
-        # Остальная валидация как раньше...
-        for idx, item in enumerate(data["items"]):
-            required_fields = ["name", "weight_grams", "calories", "protein", "fat", "carbs"]
-            
-            for field in required_fields:
-                if field not in item:
-                    raise MealParseError(f"Отсутствует поле '{field}' в элементе {idx}")
-            
-            try:
-                weight = float(item["weight_grams"])
-                calories = float(item["calories"])
-                protein = float(item["protein"])
-                fat = float(item["fat"])
-                carbs = float(item["carbs"])
-                
-                if not (1 <= weight <= 5000):
-                    raise ValueError(f"Вес {weight}г вне диапазона 1-5000")
-                
-                if not (0 <= calories <= 5000):
-                    raise ValueError(f"Калории {calories} вне диапазона 0-5000")
-                
-                if not (0 <= protein <= 500):
-                    raise ValueError(f"Белки {protein}г вне диапазона 0-500")
-                
-                if not (0 <= fat <= 500):
-                    raise ValueError(f"Жиры {fat}г вне диапазона 0-500")
-                
-                if not (0 <= carbs <= 1000):
-                    raise ValueError(f"Углеводы {carbs}г вне диапазона 0-1000")
-                
-                calculated_cal = (protein * 4) + (fat * 9) + (carbs * 4)
-                if abs(calories - calculated_cal) > calculated_cal * 0.3:
-                    logger.warning(
-                        f"Suspicious calories for {item['name']}: "
-                        f"stated={calories}, calculated={calculated_cal:.1f}"
-                    )
-                
-                item["weight_grams"] = weight
-                item["calories"] = calories
-                item["protein"] = protein
-                item["fat"] = fat
-                item["carbs"] = carbs
-                
-                if "confidence" in item:
-                    conf = float(item["confidence"])
-                    if not (0 <= conf <= 1):
-                        item["confidence"] = 0.8
-                else:
-                    item["confidence"] = 0.8
-                    
-            except (ValueError, TypeError) as e:
-                raise MealParseError(f"Ошибка валидации элемента {idx}: {e}")
-        
-        return data
-        
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON parse error: {e}\nResponse: {response[:500]}")
-        raise MealParseError(f"Некорректный JSON: {e}")
-    except MealParseError:
-        raise
-    except Exception as e:
-        logger.error(f"Unexpected parse error: {e}")
-        raise MealParseError(f"Ошибка парсинга: {e}")
+
+
 
 async def delete_multiple_meals(meal_ids: list, user_id: int) -> int:
-    """Удаляет несколько приемов пищи по их ID"""
+    """Удаляет несколько приемов пищи и пересчитывает daily_totals"""
     if not meal_ids:
         logger.warning("delete_multiple_meals called with empty meal_ids")
         return 0
-    
+
     try:
         async with mysql.pool.acquire() as conn:
-            # ✅ ИЗМЕНИТЬ ЭТУ СТРОКУ:
-            async with conn.cursor(aiomysql.DictCursor) as cur:  # ← добавить aiomysql.DictCursor
-                
-                # Получаем уникальную дату для инвалидации кэша
+            async with conn.cursor(aiomysql.DictCursor) as cur:
                 placeholders = ', '.join(['%s'] * len(meal_ids))
-                
+
+                # Получаем даты для пересчёта
                 await cur.execute(
-                    f"""SELECT DISTINCT meal_date 
-                    FROM meals_history 
+                    f"""SELECT DISTINCT meal_date
+                    FROM meals_history
                     WHERE id IN ({placeholders}) AND tg_id = %s""",
                     (*meal_ids, user_id)
                 )
-                
-                dates_to_invalidate = await cur.fetchall()
-                
+                dates_to_recalculate = await cur.fetchall()
+
                 # Удаляем приемы пищи
                 await cur.execute(
-                    f"""DELETE FROM meals_history 
+                    f"""DELETE FROM meals_history
                     WHERE id IN ({placeholders}) AND tg_id = %s""",
                     (*meal_ids, user_id)
                 )
-                
                 deleted_count = cur.rowcount
-                
-                # Инвалидируем кэш для всех дат
+
+                # Пересчитываем daily_totals + инвалидируем кэш
                 if deleted_count > 0:
                     from app.db.redis_client import redis
-                    for date_row in dates_to_invalidate:
-                        meal_date = date_row["meal_date"]  # ← теперь работает как dict
+                    for date_row in dates_to_recalculate:
+                        meal_date = date_row["meal_date"]
+                        await _recalculate_daily_totals(cur, user_id, meal_date)
                         cache_key = f"meals:summary:{user_id}:{meal_date}"
                         await redis.delete(cache_key)
-                        logger.info(f"[Meals] Invalidated cache for date {meal_date}")
-                
+
                 logger.info(f"[Meals] Deleted {deleted_count} meals for user {user_id}")
                 return deleted_count
-                
+
     except Exception as e:
         logger.exception(f"Error deleting multiple meals: {e}")
-        logger.error(f"Critical error in delete_multiple_meals: {e}")
         return 0
 
 
@@ -901,8 +732,6 @@ async def get_day_meals(user_id: int, date_str: str, user_tz: str = "Europe/Mosc
         Dict с данными дня и списком приемов пищи
     """
     try:
-        from datetime import datetime, timedelta
-        
         # Парсим дату из строки
         target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
         
@@ -1007,8 +836,6 @@ def format_meal_time(meal_datetime: datetime, user_tz: str = "Europe/Moscow") ->
     except Exception as e:
         logger.error(f"Error formatting meal time: {e}")
         return "00:00"
-
-# ✅ ДОБАВИТЬ ЭТИ ФУНКЦИИ В КОНЕЦ ФАЙЛА app/services/meals.py
 
 async def get_last_meal(user_id: int, user_tz: str = "Europe/Moscow"):
     """
@@ -1160,39 +987,3 @@ async def update_meal(
     except Exception as e:
         logger.exception(f"Critical error in update_meal: {e}")
         return False    
-
-# Добавить в конец app/services/meals.py
-
-async def get_today_meals(user_id: int, user_tz: str = "Europe/Moscow", limit: int = None) -> list:
-    """
-    Получает приемы пищи за сегодняшний день
-    
-    Args:
-        user_id: Telegram ID пользователя
-        user_tz: Часовой пояс
-        limit: Ограничение количества (опционально)
-        
-    Returns:
-        List[Dict] с приемами пищи
-    """
-    try:
-        tz = pytz.timezone(user_tz)
-        today = datetime.now(tz).date()
-        
-        if limit:
-            query = """SELECT * FROM meals_history
-                      WHERE tg_id = %s AND meal_date = %s
-                      ORDER BY meal_datetime DESC
-                      LIMIT %s"""
-            meals = await mysql.fetchall(query, (user_id, today, limit))
-        else:
-            query = """SELECT * FROM meals_history
-                      WHERE tg_id = %s AND meal_date = %s
-                      ORDER BY meal_datetime"""
-            meals = await mysql.fetchall(query, (user_id, today))
-        
-        return meals or []
-        
-    except Exception as e:
-        logger.exception(f"Error getting today meals for user {user_id}: {e}")
-        return []    
