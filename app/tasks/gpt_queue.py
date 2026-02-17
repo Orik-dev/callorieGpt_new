@@ -36,6 +36,7 @@ MAX_FOOD_NAME_LEN = 50    # Макс длина названия
 MAX_WEIGHT_GRAMS = 3000   # Макс вес порции
 MIN_WEIGHT_GRAMS = 1      # Мин вес
 MAX_CALORIES = 5000       # Макс калорий на блюдо
+MIN_CALORIES_PER_100G = 20  # Минимум калорий на 100г (даже огурец ~15)
 
 
 # ============================================
@@ -52,9 +53,9 @@ def format_meal_line(meal: dict, show_macros: bool = True) -> str:
         p = meal.get('protein', 0)
         f = meal.get('fat', 0)
         c = meal.get('carbs', 0)
-        return f"<b>{name}</b>\n{weight}г · {cal} ккал · Б{p} Ж{f} У{c}"
+        return f"<b>{name}</b>\n{weight}г · {cal:.0f} ккал · Б{p:.0f} Ж{f:.0f} У{c:.0f}"
     else:
-        return f"<b>{name}</b> — {weight}г, {cal} ккал"
+        return f"<b>{name}</b> — {weight}г, {cal:.0f} ккал"
 
 
 def format_totals(totals: dict, date_str: str = None) -> str:
@@ -106,8 +107,8 @@ def format_calculate_result(items: list) -> str:
         total_c += meal.get('carbs', 0)
     
     lines.append("─" * 20)
-    lines.append(f"<b>Всего:</b> {total_cal} ккал")
-    lines.append(f"Б {total_p}г · Ж {total_f}г · У {total_c}г")
+    lines.append(f"<b>Всего:</b> {total_cal:.0f} ккал")
+    lines.append(f"Б {total_p:.0f}г · Ж {total_f:.0f}г · У {total_c:.0f}г")
     lines.append("")
     lines.append("<i>Не добавлено в рацион</i>")
     
@@ -140,8 +141,8 @@ def format_today_meals(meals: list) -> str:
     for meal in meals[-7:]:
         time = meal["meal_datetime"].strftime("%H:%M")
         name = escape_html(meal['food_name'][:30])
-        cal = meal.get('calories', 0)
-        lines.append(f"{time}  {name} — {cal} ккал")
+        cal = float(meal.get('calories', 0))
+        lines.append(f"{time}  {name} — {cal:.0f} ккал")
     
     if len(meals) > 7:
         lines.append(f"\n<i>...и ещё {len(meals) - 7}</i>")
@@ -154,28 +155,49 @@ def format_today_meals(meals: list) -> str:
 # ============================================
 
 def validate_and_fix_item(item: dict) -> dict:
-    """Валидирует данные блюда"""
+    """Валидирует и исправляет данные блюда"""
     weight = item.get('weight_grams', 100)
     weight = max(MIN_WEIGHT_GRAMS, min(weight, MAX_WEIGHT_GRAMS))
     
-    calories = item.get('calories', 0)
+    calories = float(item.get('calories', 0))
     calories = max(0, min(calories, MAX_CALORIES))
     
-    protein = max(0, item.get('protein', 0))
-    fat = max(0, item.get('fat', 0))
-    carbs = max(0, item.get('carbs', 0))
+    protein = max(0, float(item.get('protein', 0)))
+    fat = max(0, float(item.get('fat', 0)))
+    carbs = max(0, float(item.get('carbs', 0)))
     
     name = item.get('name', 'Блюдо')[:MAX_FOOD_NAME_LEN]
     if not name.strip():
         name = 'Блюдо'
     
+    # ✅ ИСПРАВЛЕНИЕ: Если калории = 0, но есть БЖУ — пересчитать
+    if calories == 0 and (protein > 0 or fat > 0 or carbs > 0):
+        calories = (protein * 4) + (fat * 9) + (carbs * 4)
+        logger.warning(f"[Validate] Recalculated calories from macros: {calories}")
+    
+    # ✅ ИСПРАВЛЕНИЕ: Если всё нули — установить минимальные значения
+    if calories == 0 and protein == 0 and fat == 0 and carbs == 0:
+        # Грубая оценка: ~150 ккал на 100г (средняя еда)
+        estimated_cal = (weight / 100) * 150
+        calories = estimated_cal
+        protein = weight * 0.05  # ~5г белка на 100г
+        fat = weight * 0.05     # ~5г жира на 100г
+        carbs = weight * 0.15   # ~15г углеводов на 100г
+        logger.warning(f"[Validate] All zeros for '{name}', estimated: {calories:.0f} ккал")
+    
+    # ✅ ИСПРАВЛЕНИЕ: Проверка минимальной калорийности
+    min_expected = (weight / 100) * MIN_CALORIES_PER_100G
+    if calories < min_expected and weight > 0:
+        logger.warning(f"[Validate] Suspiciously low calories for '{name}': {calories} < {min_expected}")
+        # Не меняем, но логируем
+    
     return {
         'name': name,
-        'weight_grams': weight,
-        'calories': calories,
-        'protein': protein,
-        'fat': fat,
-        'carbs': carbs,
+        'weight_grams': int(weight),
+        'calories': round(calories, 1),
+        'protein': round(protein, 1),
+        'fat': round(fat, 1),
+        'carbs': round(carbs, 1),
     }
 
 
@@ -184,6 +206,17 @@ def validate_items(items: list) -> list:
     if not items:
         return []
     return [validate_and_fix_item(item) for item in items]
+
+
+def check_all_zeros(items: list) -> bool:
+    """Проверяет, все ли значения нулевые"""
+    for item in items:
+        if (item.get('calories', 0) > 0 or 
+            item.get('protein', 0) > 0 or 
+            item.get('fat', 0) > 0 or 
+            item.get('carbs', 0) > 0):
+            return False
+    return True
 
 
 # ============================================
@@ -214,7 +247,8 @@ async def get_meals_context(user_id: int, user_tz: str) -> str:
         lines = ["Сегодня добавлено:"]
         for meal in meals:
             time = meal["meal_datetime"].strftime("%H:%M")
-            lines.append(f"- {time}: {meal['food_name']} ({meal['calories']} ккал)")
+            cal = float(meal.get('calories', 0))
+            lines.append(f"- {time}: {meal['food_name']} ({cal:.0f} ккал)")
         return "\n".join(lines)
     except:
         return ""
@@ -313,10 +347,15 @@ async def process_universal_request(
             return
         
         intent = data.get("intent", "add")
-        items = validate_items(data.get("items", []))
+        raw_items = data.get("items", [])
+        items = validate_items(raw_items)
         notes = data.get("notes", "")
         
         logger.info(f"[GPT] User {user_id}: intent={intent}, items={len(items)}")
+        
+        # ✅ ИСПРАВЛЕНИЕ: Проверка на нулевые значения ДО валидации
+        if raw_items and check_all_zeros(raw_items):
+            logger.warning(f"[GPT] All zeros in response for user {user_id}, GPT failed to calculate")
         
         # Роутинг
         if intent == "unknown":

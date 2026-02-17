@@ -57,7 +57,7 @@ def _create_payment_payload(
                     "description": item_desc,
                     "quantity": "1.00",
                     "amount": {"value": f"{amount:.2f}", "currency": "RUB"},
-                    "vat_code": 1,
+                    "vat_code": 11,
                     "payment_subject": "service",
                     "payment_mode": "full_prepayment",
                     "measure": "piece",

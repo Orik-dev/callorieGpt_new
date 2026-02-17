@@ -42,7 +42,7 @@ WELCOME_TEXT = """Привет, {name}!
 ━━━━━━━━━━━━━━━━
 ⚠️ Данные о калориях приблизительные и не являются медицинской рекомендацией.
 
-Используя бота, ты принимаешь <a href="https://docs.google.com/document/d/10JTUzBqa3_L4RWfF8TxXdHiyYeLelvw-3rwrybZA-q4/edit?tab=t.0#heading=h.arj7vefczzgi">пользовательское соглашение</a> и <a href="https://telegram.org/privacy-tpa">политику конфиденциальности</a>.
+Используя бота, ты принимаешь <a href="https://docs.google.com/document/d/10JTUzBqa3_L4RWfF8TxXdHiyYeLelvw-3rwrybZA-q4/edit?tab=t.0#heading=h.arj7vefczzgi">пользовательское соглашение</a> и <a href="https://docs.google.com/document/d/11zwBLkxUQH0bRcXwTOeYqBmAS4nMAWMcy-e0Ab00vTw/edit?usp=drivesdk">политику конфиденциальности</a>.
 
 💬 Поддержка: @guard_gpt"""
 
