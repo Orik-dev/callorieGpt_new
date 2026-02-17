@@ -137,32 +137,44 @@ async def handle_start(message: Message, state: FSMContext):
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("tz:"))
-async def handle_timezone_selection(callback: CallbackQuery):
+async def handle_timezone_selection(callback: CallbackQuery, state: FSMContext):
     """Обработка выбора часового пояса"""
     user_id = callback.from_user.id
     user_name = escape_html(callback.from_user.first_name or "друг")
-    
+
     try:
         action = callback.data.split(":", 1)[1]
-        
+
         if action == "skip":
             await callback.answer("Пропущено")
             await set_user_timezone(user_id, "Europe/Moscow")
         else:
             await set_user_timezone(user_id, action)
             await callback.answer("Установлено")
-        
+
         user = await get_user_by_id(user_id)
         tokens = user.get("free_tokens", FREE_TOKENS_COUNT)
-        
+
         await callback.message.edit_text(
             WELCOME_TEXT.format(name=user_name, tokens=tokens),
             parse_mode="HTML",
             disable_web_page_preview=True
         )
-        
+
+        # Предлагаем настроить профиль если цель калорий не задана
+        if not user.get("calorie_goal"):
+            from app.bot.handlers.profile_setup import gender_keyboard
+            await callback.message.answer(
+                "<b>Настройте цель калорий</b>\n\n"
+                "Чтобы бот считал прогресс точнее,\n"
+                "ответьте на пару вопросов.\n\n"
+                "<b>Выберите пол:</b>",
+                reply_markup=gender_keyboard(),
+                parse_mode="HTML"
+            )
+
         logger.info(f"[Start] User {user_id} set timezone: {action}")
-                
+
     except Exception as e:
         logger.exception(f"[Start] Timezone error for user {user_id}: {e}")
         await callback.answer("Ошибка. Попробуйте /start", show_alert=True)

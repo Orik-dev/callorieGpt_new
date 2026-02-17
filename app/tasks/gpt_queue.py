@@ -21,6 +21,7 @@ from app.services.meals import (
 from app.db.redis_client import redis
 from app.bot.bot import bot
 from app.utils.telegram_helpers import safe_send_message, safe_delete_message, escape_html
+from app.config import settings
 import pytz
 from datetime import datetime
 import uuid
@@ -280,6 +281,97 @@ async def is_duplicate_request(user_id: int, text_hash: str) -> bool:
 
 
 # ============================================
+# ИСТОРИЯ ДИАЛОГА (контекст разговора)
+# ============================================
+CHAT_HISTORY_TTL = 600          # 10 минут
+CHAT_HISTORY_MAX_ENTRIES = 6    # 3 обмена (user+assistant)
+CHAT_HISTORY_MAX_CHARS = 1500   # лимит символов
+
+
+async def get_chat_history(user_id: int) -> list[dict]:
+    """Получает историю диалога из Redis"""
+    key = f"chat_history:{user_id}"
+    try:
+        data = await redis.get(key)
+        if not data:
+            return []
+        history = json.loads(data)
+        return history if isinstance(history, list) else []
+    except Exception as e:
+        logger.warning(f"[ChatHistory] Error reading for {user_id}: {e}")
+        return []
+
+
+async def save_chat_exchange(
+    user_id: int,
+    user_summary: str,
+    assistant_summary: str,
+) -> None:
+    """Сохраняет обмен user+assistant в историю"""
+    key = f"chat_history:{user_id}"
+    try:
+        history = await get_chat_history(user_id)
+
+        history.append({"role": "user", "content": user_summary})
+        history.append({"role": "assistant", "content": assistant_summary})
+
+        # Обрезаем до макс. записей
+        if len(history) > CHAT_HISTORY_MAX_ENTRIES:
+            history = history[-CHAT_HISTORY_MAX_ENTRIES:]
+
+        # Обрезаем по символам (удаляем старые пары)
+        while history and sum(len(m["content"]) for m in history) > CHAT_HISTORY_MAX_CHARS:
+            if len(history) >= 2:
+                history = history[2:]
+            else:
+                history = []
+                break
+
+        await redis.setex(
+            key,
+            CHAT_HISTORY_TTL,
+            json.dumps(history, ensure_ascii=False),
+        )
+    except Exception as e:
+        logger.warning(f"[ChatHistory] Error saving for {user_id}: {e}")
+
+
+def build_user_summary(text: str, has_image: bool) -> str:
+    """Краткое описание сообщения пользователя (без base64)"""
+    if has_image:
+        caption = text.replace("[ФОТО ЕДЫ]", "").strip()
+        if caption:
+            return f"Пользователь отправил фото еды с подписью: {caption[:100]}"
+        return "Пользователь отправил фото еды"
+    return text[:200] if text and text.strip() else "Сообщение пользователя"
+
+
+def build_assistant_summary(intent: str, items: list, notes: str) -> str:
+    """Краткое описание ответа GPT"""
+    if intent == "add" and items:
+        parts = [
+            f"{it.get('name', 'Блюдо')[:30]} {it.get('weight_grams', 0)}г ({it.get('calories', 0):.0f} ккал)"
+            for it in items[:5]
+        ]
+        return "Добавлено: " + ", ".join(parts)
+
+    if intent == "calculate" and items:
+        parts = [
+            f"{it.get('name', 'Блюдо')[:30]} ({it.get('calories', 0):.0f} ккал)"
+            for it in items[:5]
+        ]
+        return "Расчёт: " + ", ".join(parts)
+
+    if intent == "delete":
+        return "Удалено из рациона"
+
+    if intent == "edit":
+        return "Отредактировано"
+
+    return notes[:100] if notes else "Ответ бота"
+
+
+# ============================================
 # ГЛАВНАЯ ФУНКЦИЯ
 # ============================================
 
@@ -313,15 +405,19 @@ async def process_universal_request(
         
         user_tz = user.get('timezone', 'Europe/Moscow')
         context = await get_meals_context(user_id, user_tz)
-        
+
+        # Получаем историю диалога для контекста
+        chat_history = await get_chat_history(user_id)
+
         if image_url:
             text = f"[ФОТО ЕДЫ] {text}" if text else "[ФОТО ЕДЫ]"
-        
+
         code, gpt_response = await ai_request(
             user_id=user_id,
             text=text,
             image_link=image_url,
-            context=context
+            context=context,
+            history=chat_history,
         )
         logger.info(f"[GPT] Raw response for {user_id}: {gpt_response[:500] if gpt_response else 'None'}...")
         
@@ -357,13 +453,24 @@ async def process_universal_request(
         if raw_items and check_all_zeros(raw_items):
             logger.warning(f"[GPT] All zeros in response for user {user_id}, GPT failed to calculate")
 
+        # Сохраняем обмен в историю диалога
+        try:
+            user_summary = build_user_summary(text, image_url is not None)
+            assistant_summary = build_assistant_summary(intent, items, notes)
+            await save_chat_exchange(user_id, user_summary, assistant_summary)
+        except Exception as e:
+            logger.warning(f"[GPT] Error saving chat history for {user_id}: {e}")
+
+        # Персональная цель калорий
+        calorie_goal = user.get("calorie_goal") or settings.default_calorie_goal
+
         # Роутинг
         if intent == "unknown":
             await handle_unknown(user_id, chat_id, message_id, notes)
         elif intent == "calculate":
             await handle_calculate(user_id, chat_id, message_id, items)
         elif intent == "add_previous":
-            await handle_add_previous(user_id, chat_id, message_id, user_tz)
+            await handle_add_previous(user_id, chat_id, message_id, user_tz, calorie_goal)
         elif intent == "delete":
             await handle_delete(user_id, chat_id, message_id, data, user_tz)
         elif intent == "edit":
@@ -374,7 +481,7 @@ async def process_universal_request(
                 await safe_send_message(bot, chat_id, notes or "Не распознал еду. Опишите подробнее.")
                 await refund_token(user_id)
                 return
-            await handle_add(user_id, chat_id, message_id, items, user_tz, image_url, meal_time)
+            await handle_add(user_id, chat_id, message_id, items, user_tz, image_url, meal_time, calorie_goal)
         
     except Exception as e:
         logger.exception(f"[GPT] Error: {e}")
@@ -397,9 +504,11 @@ async def handle_unknown(user_id: int, chat_id: int, message_id: int, notes: str
     await refund_token(user_id)
 
 
-async def handle_add(user_id: int, chat_id: int, message_id: int, items: list, user_tz: str, image_url: str = None, meal_time: str = None):
+async def handle_add(user_id: int, chat_id: int, message_id: int, items: list, user_tz: str, image_url: str = None, meal_time: str = None, calorie_goal: int = None):
     """Добавление"""
     try:
+        goal = calorie_goal or settings.default_calorie_goal
+
         result = await save_meals(user_id, {"items": items, "notes": ""}, user_tz, image_url, meal_time=meal_time)
         added_ids = result.get('added_meal_ids', [])
 
@@ -409,9 +518,8 @@ async def handle_add(user_id: int, chat_id: int, message_id: int, items: list, u
 
         text = format_add_success(items, summary["totals"], date_str)
 
-        # Прогресс калорий за день
+        # Прогресс калорий за день (персональная цель)
         cal = float(summary["totals"].get('total_calories', 0))
-        goal = 2000
         pct = min(cal / goal * 100, 100) if goal > 0 else 0
         filled = int(pct / 10)
         bar = "▓" * filled + "░" * (10 - filled)
@@ -458,7 +566,7 @@ async def handle_calculate(user_id: int, chat_id: int, message_id: int, items: l
     await safe_send_message(bot, chat_id, text, keyboard)
 
 
-async def handle_add_previous(user_id: int, chat_id: int, message_id: int, user_tz: str):
+async def handle_add_previous(user_id: int, chat_id: int, message_id: int, user_tz: str, calorie_goal: int = None):
     """Добавить расчёт"""
     items = await get_calc_data(user_id)
 
@@ -473,7 +581,7 @@ async def handle_add_previous(user_id: int, chat_id: int, message_id: int, user_
     if last_key:
         await redis.delete(last_key)
     await redis.delete(f"calc_last:{user_id}")
-    await handle_add(user_id, chat_id, message_id, items, user_tz, None)
+    await handle_add(user_id, chat_id, message_id, items, user_tz, None, None, calorie_goal)
 
 
 async def handle_delete(user_id: int, chat_id: int, message_id: int, data: dict, user_tz: str):

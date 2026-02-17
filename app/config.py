@@ -50,6 +50,9 @@ class Settings:
         self.default_subscription_days = int(os.getenv("DEFAULT_SUBSCRIPTION_DAYS", 30))
         self.default_subscription_amount = float(os.getenv("DEFAULT_SUBSCRIPTION_AMOUNT", 1090.0))
 
+        # Profile / BMR defaults
+        self.default_calorie_goal = int(os.getenv("DEFAULT_CALORIE_GOAL", 2000))
+
         # Logging
         self.log_level = os.getenv("LOG_LEVEL", "INFO").upper()
 

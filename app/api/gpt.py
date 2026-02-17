@@ -117,28 +117,38 @@ async def ai_request(
     user_id: int,
     text: str,
     image_link: str = None,
-    context: str = None
+    context: str = None,
+    history: list[dict] = None,
 ) -> Tuple[int, str]:
     """Отправляет запрос к OpenAI API"""
-    
+
     user_message = text
     if context:
         user_message = f"КОНТЕКСТ:\n{context}\n\nЗАПРОС: {text}"
-    
+
     content = [{"type": "text", "text": user_message}]
-    
+
     if image_link:
         content.append({
             "type": "image_url",
-            "image_url": {"url": image_link, "detail": "high"}  # ✅ ИСПРАВЛЕНО: было "low"
+            "image_url": {"url": image_link, "detail": "high"}
         })
-    
+
+    # Собираем messages: system → история диалога → текущий запрос
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    if history:
+        for entry in history:
+            messages.append({
+                "role": entry["role"],
+                "content": entry["content"],
+            })
+
+    messages.append({"role": "user", "content": content})
+
     payload = {
         "model": settings.openai_default_model,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": content}
-        ],
+        "messages": messages,
         "temperature": settings.openai_temperature,
         "max_tokens": settings.openai_max_tokens,
         "response_format": {"type": "json_object"}

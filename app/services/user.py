@@ -304,3 +304,79 @@ async def set_user_timezone(user_id: int, timezone: str) -> None:
     except Exception as e:
         logger.error(f"Error setting timezone for user {user_id}: {e}")
         raise
+
+
+# ============================================
+# ПРОФИЛЬ / BMR / TDEE
+# ============================================
+
+ACTIVITY_MULTIPLIERS = {
+    "sedentary":   1.2,     # Сидячий образ жизни
+    "light":       1.375,   # Лёгкая активность (1-3 раза/нед)
+    "moderate":    1.55,    # Умеренная (3-5 раз/нед)
+    "active":      1.725,   # Высокая (6-7 раз/нед)
+    "very_active": 1.9,     # Очень высокая (2 раза/день)
+}
+
+
+def calculate_bmr_tdee(
+    gender: str,
+    weight_kg: float,
+    height_cm: int,
+    birth_year: int,
+    activity_level: str,
+) -> tuple:
+    """
+    Формула Миффлина-Сан Жеора.
+    Returns (bmr, tdee, recommended_goal).
+    """
+    age = datetime.now().year - birth_year
+
+    if gender == "male":
+        bmr = 10 * weight_kg + 6.25 * height_cm - 5 * age + 5
+    else:
+        bmr = 10 * weight_kg + 6.25 * height_cm - 5 * age - 161
+
+    multiplier = ACTIVITY_MULTIPLIERS.get(activity_level, 1.55)
+    tdee = bmr * multiplier
+    recommended_goal = round(tdee / 50) * 50
+
+    return bmr, tdee, recommended_goal
+
+
+async def save_user_profile(
+    user_id: int,
+    gender: str,
+    height_cm: int,
+    weight_kg: float,
+    birth_year: int,
+    activity_level: str,
+    calorie_goal: int,
+) -> None:
+    """Сохраняет профиль пользователя"""
+    try:
+        async with mysql.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """UPDATE users_tbl
+                       SET gender=%s, height_cm=%s, weight_kg=%s,
+                           birth_year=%s, activity_level=%s, calorie_goal=%s
+                       WHERE tg_id=%s""",
+                    (gender, height_cm, weight_kg, birth_year,
+                     activity_level, calorie_goal, user_id)
+                )
+        logger.info(f"[User] Profile saved for {user_id}: goal={calorie_goal}")
+    except Exception as e:
+        logger.error(f"[User] Error saving profile for {user_id}: {e}")
+        raise
+
+
+async def get_calorie_goal(user_id: int) -> int:
+    """Возвращает цель калорий или дефолт"""
+    try:
+        user = await get_user_by_id(user_id)
+        if user and user.get("calorie_goal"):
+            return int(user["calorie_goal"])
+    except Exception as e:
+        logger.error(f"[User] Error getting calorie goal for {user_id}: {e}")
+    return settings.default_calorie_goal

@@ -7,7 +7,7 @@ from app.db.redis_client import redis
 from app.config import settings
 from app.bot.middleware.fastapi_app import FastAPIAppMiddleware
 from app.bot.middleware.kick_on_private import KickNonPrivateMiddleware
-from app.bot.handlers import start, profile, entry, subscribe, admin, system, help, bots, food  # ✅ food вместо stats
+from app.bot.handlers import start, profile, profile_setup, entry, subscribe, admin, system, help, bots, food
 from app.bot.middleware.redis_middleware import RedisMiddleware
 
 # Инициализация хранилища состояний для FSM
@@ -26,8 +26,9 @@ dp = Dispatcher(storage=storage)
 dp.include_router(system.router)     # Обработка системных событий
 dp.include_router(start.router)      # Команда /start
 dp.include_router(bots.router)       # Команда /bots
-dp.include_router(profile.router)    # Команда /profile
-dp.include_router(subscribe.router)  # Команда /subscribe
+dp.include_router(profile.router)        # Команда /profile
+dp.include_router(profile_setup.router)  # Wizard настройки профиля
+dp.include_router(subscribe.router)      # Команда /subscribe
 dp.include_router(admin.router)      # Админ команды
 dp.include_router(help.router)       # Команда /help
 dp.include_router(food.router)       # ✅ Команда /food (было stats.router)
