@@ -55,6 +55,7 @@ async def handle_profile(message: types.Message):
             "lose": "Похудеть",
             "gain": "Набрать массу",
             "maintain": "Поддержание",
+            "custom": "Свои цели",
         }
 
         profile_text = (
@@ -133,6 +134,10 @@ async def handle_profile(message: types.Message):
                 text="Изменить цель",
                 callback_data="profile_setup:start"
             )])
+        buttons.append([InlineKeyboardButton(
+            text="Ввести КБЖУ вручную",
+            callback_data="manual_goal:start"
+        )])
 
         if autopay_active:
             buttons.append([InlineKeyboardButton(

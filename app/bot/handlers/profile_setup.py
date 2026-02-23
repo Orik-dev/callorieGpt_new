@@ -15,7 +15,9 @@ from app.bot.states.broadcast_state import ProfileSetupState
 from app.services.user import (
     save_user_profile,
     calculate_bmr_tdee,
+    save_manual_goals,
 )
+from app.bot.states.broadcast_state import ManualGoalState
 from datetime import datetime
 import logging
 
@@ -348,4 +350,136 @@ async def handle_fitness_goal(callback: CallbackQuery, state: FSMContext):
         f"[ProfileSetup] Saved for {user_id}: "
         f"fitness={fitness_goal}, cal={calorie_goal}, "
         f"P={protein_g}g F={fat_g}g C={carbs_g}g"
+    )
+
+
+# ============================================
+# Ручной ввод КБЖУ
+# ============================================
+
+@router.callback_query(F.data == "manual_goal:start")
+async def handle_manual_goal_start(callback: CallbackQuery, state: FSMContext):
+    """Начало ручного ввода КБЖУ"""
+    await state.set_state(ManualGoalState.waiting_calories)
+    await callback.answer()
+    await callback.message.edit_text(
+        "<b>Ручной ввод целей КБЖУ</b>\n\n"
+        "Введите вашу цель <b>калорий</b> в сутки\n"
+        "(например: 2200):",
+        parse_mode="HTML"
+    )
+
+
+@router.message(ManualGoalState.waiting_calories)
+async def handle_manual_calories(message: Message, state: FSMContext):
+    """Шаг 1: калории"""
+    try:
+        cal = int(message.text.strip())
+        if cal < 800 or cal > 10000:
+            await message.answer("Введите число от 800 до 10000.")
+            return
+    except (ValueError, AttributeError):
+        await message.answer("Введите число, например: 2200")
+        return
+
+    await state.update_data(manual_cal=cal)
+    await state.set_state(ManualGoalState.waiting_protein)
+    await message.answer(
+        f"Калории: <b>{cal}</b> ккал\n\n"
+        f"Теперь введите цель <b>белков</b> в граммах\n"
+        f"(например: 150):",
+        parse_mode="HTML"
+    )
+
+
+@router.message(ManualGoalState.waiting_protein)
+async def handle_manual_protein(message: Message, state: FSMContext):
+    """Шаг 2: белки"""
+    try:
+        protein = int(message.text.strip())
+        if protein < 10 or protein > 500:
+            await message.answer("Введите число от 10 до 500.")
+            return
+    except (ValueError, AttributeError):
+        await message.answer("Введите число, например: 150")
+        return
+
+    await state.update_data(manual_protein=protein)
+    await state.set_state(ManualGoalState.waiting_fat)
+    await message.answer(
+        f"Белки: <b>{protein}</b>г\n\n"
+        f"Введите цель <b>жиров</b> в граммах\n"
+        f"(например: 70):",
+        parse_mode="HTML"
+    )
+
+
+@router.message(ManualGoalState.waiting_fat)
+async def handle_manual_fat(message: Message, state: FSMContext):
+    """Шаг 3: жиры"""
+    try:
+        fat = int(message.text.strip())
+        if fat < 10 or fat > 300:
+            await message.answer("Введите число от 10 до 300.")
+            return
+    except (ValueError, AttributeError):
+        await message.answer("Введите число, например: 70")
+        return
+
+    await state.update_data(manual_fat=fat)
+    await state.set_state(ManualGoalState.waiting_carbs)
+    await message.answer(
+        f"Жиры: <b>{fat}</b>г\n\n"
+        f"Введите цель <b>углеводов</b> в граммах\n"
+        f"(например: 250):",
+        parse_mode="HTML"
+    )
+
+
+@router.message(ManualGoalState.waiting_carbs)
+async def handle_manual_carbs(message: Message, state: FSMContext):
+    """Шаг 4: углеводы → сохранение"""
+    try:
+        carbs = int(message.text.strip())
+        if carbs < 20 or carbs > 800:
+            await message.answer("Введите число от 20 до 800.")
+            return
+    except (ValueError, AttributeError):
+        await message.answer("Введите число, например: 250")
+        return
+
+    data = await state.get_data()
+    cal = data["manual_cal"]
+    protein = data["manual_protein"]
+    fat = data["manual_fat"]
+    user_id = message.from_user.id
+
+    try:
+        await save_manual_goals(
+            user_id=user_id,
+            calorie_goal=cal,
+            protein_goal=protein,
+            fat_goal=fat,
+            carbs_goal=carbs,
+        )
+    except Exception as e:
+        logger.exception(f"[ManualGoal] Error saving for {user_id}: {e}")
+        await message.answer("Ошибка сохранения. Попробуйте позже.")
+        await state.clear()
+        return
+
+    await state.clear()
+    await message.answer(
+        f"<b>Цели сохранены!</b>\n\n"
+        f"Калории: <b>{cal}</b> ккал\n"
+        f"Белки: <b>{protein}</b>г\n"
+        f"Жиры: <b>{fat}</b>г\n"
+        f"Углеводы: <b>{carbs}</b>г\n\n"
+        f"Изменить: /profile",
+        parse_mode="HTML"
+    )
+
+    logger.info(
+        f"[ManualGoal] Saved for {user_id}: "
+        f"cal={cal}, P={protein}g F={fat}g C={carbs}g"
     )

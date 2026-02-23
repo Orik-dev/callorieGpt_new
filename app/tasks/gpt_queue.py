@@ -729,6 +729,17 @@ async def handle_edit(user_id: int, chat_id: int, message_id: int, data: dict, u
 
         if items:
             new = items[0]
+            old_weight = meal.get('weight_grams', 0)
+            new_weight = new.get('weight_grams', old_weight)
+
+            # Пропорциональный пересчёт КБЖУ при изменении веса
+            if old_weight and new_weight and old_weight != new_weight:
+                ratio = new_weight / old_weight
+                new['calories'] = round(float(meal['calories']) * ratio, 1)
+                new['protein'] = round(float(meal['protein']) * ratio, 1)
+                new['fat'] = round(float(meal['fat']) * ratio, 1)
+                new['carbs'] = round(float(meal['carbs']) * ratio, 1)
+
             await update_meal(
                 meal_id=meal['id'],
                 user_id=user_id,

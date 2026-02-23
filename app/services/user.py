@@ -409,6 +409,33 @@ async def save_user_profile(
         raise
 
 
+async def save_manual_goals(
+    user_id: int,
+    calorie_goal: int,
+    protein_goal: int,
+    fat_goal: int,
+    carbs_goal: int,
+) -> None:
+    """Сохраняет вручную введённые цели КБЖУ"""
+    try:
+        async with mysql.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """UPDATE users_tbl
+                       SET calorie_goal=%s, fitness_goal='custom',
+                           protein_goal=%s, fat_goal=%s, carbs_goal=%s
+                       WHERE tg_id=%s""",
+                    (calorie_goal, protein_goal, fat_goal, carbs_goal, user_id)
+                )
+        logger.info(
+            f"[User] Manual goals saved for {user_id}: "
+            f"cal={calorie_goal}, P={protein_goal}g F={fat_goal}g C={carbs_goal}g"
+        )
+    except Exception as e:
+        logger.error(f"[User] Error saving manual goals for {user_id}: {e}")
+        raise
+
+
 async def get_calorie_goal(user_id: int) -> int:
     """Возвращает цель калорий или дефолт"""
     try:
