@@ -130,6 +130,10 @@ async def handle_gender(callback: CallbackQuery, state: FSMContext):
 @router.message(ProfileSetupState.waiting_birth_year)
 async def handle_birth_year(message: Message, state: FSMContext):
     """Шаг 2 → 3: год рождения → рост"""
+    if message.text and message.text.startswith("/"):
+        await state.clear()
+        return
+
     if not message.text:
         await message.answer("Пожалуйста, введите год рождения числом.")
         return
@@ -171,6 +175,10 @@ async def handle_birth_year(message: Message, state: FSMContext):
 @router.message(ProfileSetupState.waiting_height)
 async def handle_height(message: Message, state: FSMContext):
     """Шаг 3 → 4: рост → вес"""
+    if message.text and message.text.startswith("/"):
+        await state.clear()
+        return
+
     if not message.text:
         await message.answer("Пожалуйста, введите рост числом.")
         return
@@ -207,6 +215,10 @@ async def handle_height(message: Message, state: FSMContext):
 @router.message(ProfileSetupState.waiting_weight)
 async def handle_weight(message: Message, state: FSMContext):
     """Шаг 4 → 5: вес → активность"""
+    if message.text and message.text.startswith("/"):
+        await state.clear()
+        return
+
     if not message.text:
         await message.answer("Пожалуйста, введите вес числом.")
         return
@@ -373,6 +385,10 @@ async def handle_manual_goal_start(callback: CallbackQuery, state: FSMContext):
 @router.message(ManualGoalState.waiting_calories)
 async def handle_manual_calories(message: Message, state: FSMContext):
     """Шаг 1: калории"""
+    if message.text and message.text.startswith("/"):
+        await state.clear()
+        return  # пропускаем — команду обработает другой хендлер
+
     try:
         cal = int(message.text.strip())
         if cal < 800 or cal > 10000:
@@ -395,6 +411,10 @@ async def handle_manual_calories(message: Message, state: FSMContext):
 @router.message(ManualGoalState.waiting_protein)
 async def handle_manual_protein(message: Message, state: FSMContext):
     """Шаг 2: белки"""
+    if message.text and message.text.startswith("/"):
+        await state.clear()
+        return
+
     try:
         protein = int(message.text.strip())
         if protein < 10 or protein > 500:
@@ -417,6 +437,10 @@ async def handle_manual_protein(message: Message, state: FSMContext):
 @router.message(ManualGoalState.waiting_fat)
 async def handle_manual_fat(message: Message, state: FSMContext):
     """Шаг 3: жиры"""
+    if message.text and message.text.startswith("/"):
+        await state.clear()
+        return
+
     try:
         fat = int(message.text.strip())
         if fat < 10 or fat > 300:
@@ -439,6 +463,10 @@ async def handle_manual_fat(message: Message, state: FSMContext):
 @router.message(ManualGoalState.waiting_carbs)
 async def handle_manual_carbs(message: Message, state: FSMContext):
     """Шаг 4: углеводы → сохранение"""
+    if message.text and message.text.startswith("/"):
+        await state.clear()
+        return
+
     try:
         carbs = int(message.text.strip())
         if carbs < 20 or carbs > 800:
