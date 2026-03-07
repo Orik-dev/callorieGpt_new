@@ -192,10 +192,22 @@ async def try_autopay(user: dict):
 
         payment = await asyncio.to_thread(_create)
 
+        # Сохраняем платёж в payment_tbl (чтобы webhook мог его найти)
+        pm = getattr(payment, "payment_method", None)
+        pm_id = getattr(pm, "id", None) if pm else None
+        await save_payment(
+            user_id=user_id,
+            status=payment.status,
+            payment_id=payment.id,
+            method_id=pm_id or method_id,
+            amount=amount,
+            days=days,
+        )
+
         if payment.status == "succeeded":
             logger.info(f"[AutoPay] ✅ User {user_id} payment succeeded: {payment.id}")
             await extend_subscription(user_id, days, method_id, amount)
-            
+
             async with mysql.pool.acquire() as conn:
                 async with conn.cursor() as cur:
                     await cur.execute(

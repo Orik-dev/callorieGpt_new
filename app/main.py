@@ -8,7 +8,6 @@ from app.bot.bot import dp, setup_middlewares, bot
 from app.db.mysql import init_db, close_db
 from app.db.redis_client import redis, init_arq_redis
 from app.config import settings
-from app.tasks.subscriptions import try_all_autopays
 from app.utils.logger import setup_logger
 from app.bot.handlers.start import setup_bot_commands 
 
@@ -28,27 +27,7 @@ async def lifespan(app: FastAPI):
     setup_middlewares(app)
     
     await setup_bot_commands()
-    
-    # Разовый запуск автоплатежей с блокировкой
-    lock_key = "locks:autopays:startup"
-    lock_acquired = False
-    
-    try:
-        lock_acquired = await redis.set(lock_key, "1", ex=300, nx=True)
-        
-        if lock_acquired:
-            logger.info("🔐 Лок на автосписания получен")
-            await try_all_autopays(None)
-            logger.info("✅ Разовый прогон автосписаний выполнен")
-        else:
-            logger.info("⏭️ Пропускаю автосписания: лок занят другим воркером")
-    except Exception as e:
-        logger.exception(f"❌ Ошибка при разовом прогоне автосписаний: {e}")
-    finally:
-        if lock_acquired:
-            await redis.delete(lock_key)
-            logger.info("🔓 Лок на автосписания освобожден")
-    
+
     logger.info("✅ Ресурсы инициализированы. Приложение готово принимать запросы.")
     
     yield  # Приложение работает
