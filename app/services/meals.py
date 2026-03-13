@@ -1,4 +1,5 @@
 import aiomysql
+import asyncio
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import json
@@ -67,81 +68,89 @@ async def save_meals(
                 pass  # Используем текущее время
         
         added_meal_ids = []  # ✅ Список ID добавленных блюд
-        
-        async with mysql.pool.acquire() as conn:
-            async with conn.cursor() as cur:
-                await conn.begin()
-                
-                try:
-                    # Сохраняем каждое блюдо
-                    for item in parsed_data["items"]:
-                        await cur.execute(
-                            """INSERT INTO meals_history 
-                            (tg_id, meal_date, meal_datetime, food_name, weight_grams,
-                             calories, protein, fat, carbs, confidence_score, 
-                             gpt_raw_response, image_file_id)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                            (
-                                user_id,
-                                today,
-                                now,
-                                item["name"][:255],
-                                int(item["weight_grams"]),
-                                Decimal(str(item["calories"])),
-                                Decimal(str(item["protein"])),
-                                Decimal(str(item["fat"])),
-                                Decimal(str(item["carbs"])),
-                                Decimal(str(item.get("confidence", 0.8))),
-                                json.dumps(parsed_data, ensure_ascii=False),
-                                image_file_id
+
+        max_retries = 3
+        for attempt in range(max_retries):
+            added_meal_ids = []
+            async with mysql.pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await conn.begin()
+
+                    try:
+                        # Сохраняем каждое блюдо
+                        for item in parsed_data["items"]:
+                            await cur.execute(
+                                """INSERT INTO meals_history
+                                (tg_id, meal_date, meal_datetime, food_name, weight_grams,
+                                 calories, protein, fat, carbs, confidence_score,
+                                 gpt_raw_response, image_file_id)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                                (
+                                    user_id,
+                                    today,
+                                    now,
+                                    item["name"][:255],
+                                    int(item["weight_grams"]),
+                                    Decimal(str(item["calories"])),
+                                    Decimal(str(item["protein"])),
+                                    Decimal(str(item["fat"])),
+                                    Decimal(str(item["carbs"])),
+                                    Decimal(str(item.get("confidence", 0.8))),
+                                    json.dumps(parsed_data, ensure_ascii=False),
+                                    image_file_id
+                                )
                             )
+
+                            # ✅ Получаем ID добавленного блюда
+                            added_meal_ids.append(cur.lastrowid)
+
+                        # Пересчитываем итоги дня (атомарно)
+                        await cur.execute(
+                            """INSERT INTO daily_totals
+                                (tg_id, date, total_calories, total_protein,
+                                 total_fat, total_carbs, meals_count)
+                            SELECT
+                                tg_id,
+                                meal_date,
+                                SUM(calories),
+                                SUM(protein),
+                                SUM(fat),
+                                SUM(carbs),
+                                COUNT(*)
+                            FROM meals_history
+                            WHERE tg_id = %s AND meal_date = %s
+                            GROUP BY tg_id, meal_date
+                            ON DUPLICATE KEY UPDATE
+                                total_calories = VALUES(total_calories),
+                                total_protein = VALUES(total_protein),
+                                total_fat = VALUES(total_fat),
+                                total_carbs = VALUES(total_carbs),
+                                meals_count = VALUES(meals_count)""",
+                            (user_id, today)
                         )
-                        
-                        # ✅ Получаем ID добавленного блюда
-                        added_meal_ids.append(cur.lastrowid)
-                    
-                    # Пересчитываем итоги дня (атомарно)
-                    await cur.execute(
-                        """INSERT INTO daily_totals 
-                            (tg_id, date, total_calories, total_protein, 
-                             total_fat, total_carbs, meals_count)
-                        SELECT 
-                            tg_id, 
-                            meal_date,
-                            SUM(calories), 
-                            SUM(protein), 
-                            SUM(fat), 
-                            SUM(carbs), 
-                            COUNT(*)
-                        FROM meals_history
-                        WHERE tg_id = %s AND meal_date = %s
-                        GROUP BY tg_id, meal_date
-                        ON DUPLICATE KEY UPDATE
-                            total_calories = VALUES(total_calories),
-                            total_protein = VALUES(total_protein),
-                            total_fat = VALUES(total_fat),
-                            total_carbs = VALUES(total_carbs),
-                            meals_count = VALUES(meals_count)""",
-                        (user_id, today)
-                    )
-                    
-                    await conn.commit()
-                    
-                    logger.info(
-                        f"✅ Saved {len(parsed_data['items'])} meals for user {user_id} "
-                        f"on {today}, IDs: {added_meal_ids}"
-                    )
-                    
-                    # Получаем обновленные итоги
-                    summary = await get_today_summary(user_id, user_tz)
-                    summary['added_meal_ids'] = added_meal_ids  # ✅ Добавляем ID
-                    
-                    return summary
-                    
-                except Exception as e:
-                    await conn.rollback()
-                    logger.exception(f"Error saving meals for user {user_id}: {e}")
-                    raise
+
+                        await conn.commit()
+
+                        logger.info(
+                            f"✅ Saved {len(parsed_data['items'])} meals for user {user_id} "
+                            f"on {today}, IDs: {added_meal_ids}"
+                        )
+
+                        # Получаем обновленные итоги
+                        summary = await get_today_summary(user_id, user_tz)
+                        summary['added_meal_ids'] = added_meal_ids  # ✅ Добавляем ID
+
+                        return summary
+
+                    except Exception as e:
+                        await conn.rollback()
+                        # Retry on deadlock
+                        if e.args[0] == 1213 and attempt < max_retries - 1:
+                            logger.warning(f"[save_meals] Deadlock for user {user_id}, retry {attempt + 1}")
+                            await asyncio.sleep(0.1 * (attempt + 1))
+                            continue
+                        logger.exception(f"Error saving meals for user {user_id}: {e}")
+                        raise
                     
     except Exception as e:
         logger.exception(f"Critical error in save_meals: {e}")

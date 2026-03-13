@@ -214,6 +214,12 @@ async def try_autopay(user: dict):
                         "UPDATE users_tbl SET failed_autopay_attempts = 0 WHERE tg_id=%s",
                         (user_id,),
                     )
+        elif payment.status == "canceled":
+            logger.warning(f"[AutoPay] User {user_id} payment canceled: {payment.id}")
+            raise RuntimeError(f"YooKassa status: canceled")
+        elif payment.status == "pending":
+            logger.info(f"[AutoPay] User {user_id} payment pending: {payment.id}")
+            return  # webhook обработает позже
         else:
             raise RuntimeError(f"YooKassa status: {payment.status}")
 
