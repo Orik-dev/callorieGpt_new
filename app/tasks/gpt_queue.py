@@ -531,8 +531,8 @@ async def handle_add(user_id: int, chat_id: int, message_id: int, items: list, u
         # Прогресс калорий за день
         totals = summary["totals"]
         cal = float(totals.get('total_calories', 0))
-        pct = min(cal / goal * 100, 100) if goal > 0 else 0
-        filled = int(pct / 10)
+        pct = (cal / goal * 100) if goal > 0 else 0
+        filled = min(int(pct / 10), 10)
         bar = "▓" * filled + "░" * (10 - filled)
         text += f"\n\n{bar} {pct:.0f}% от ~{goal} ккал"
 
